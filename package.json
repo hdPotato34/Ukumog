@@ -1,0 +1,11 @@
+{
+  "name": "hd-antiwuziqi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "server": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
