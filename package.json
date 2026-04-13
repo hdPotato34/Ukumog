@@ -1,11 +1,54 @@
 {
   "name": "hd-antiwuziqi",
+  "productName": "Anti-Gomoku Online",
+  "version": "0.1.0",
+  "description": "Desktop Anti-Gomoku with local and online play.",
+  "author": "OpenAI Codex",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
-    "server": "node server.mjs"
+    "build:app": "node scripts/build.mjs",
+    "desktop": "npm run build:app && electron .",
+    "server": "node server.mjs",
+    "dist": "npm run build:app && electron-builder --win nsis"
   },
   "dependencies": {
-    "ws": "^8.18.3"
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.11"
+  },
+  "build": {
+    "appId": "com.hd.antigomoku",
+    "productName": "Anti-Gomoku Online",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "site/index.html",
+      "site/renderer.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "site/server.cjs",
+        "to": "server/server.cjs"
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

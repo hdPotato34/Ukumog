@@ -1,0 +1,10 @@
+node_modules
+build
+release
+.git
+.gitignore
+electron
+tmp_room_server.out.log
+tmp_room_server.err.log
+npm-debug.log
+*.check.js

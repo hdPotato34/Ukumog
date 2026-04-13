@@ -22,24 +22,73 @@ export const MARGIN = 26;
 export const PR = 15;
 export const GOLD = "#e8c96a";
 export const SIZE_OPTIONS = [9, 11, 13, 15];
-export const TIMER_OPTIONS = [
-  { label: "None", value: null },
-  { label: "30 s", value: 30 },
-  { label: "1 min", value: 60 },
-  { label: "2 min", value: 120 },
-  { label: "5 min", value: 300 },
+export const COLOR_MODE_OPTIONS = [
+  { label: "Black", value: "black" },
+  { label: "White", value: "white" },
+  { label: "Random", value: "random" },
 ];
+export const CLOCK_PRESET_OPTIONS = [
+  { id: "3+2", label: "3+2", baseSeconds: 180, incrementSeconds: 2 },
+  { id: "5+3", label: "5+3", baseSeconds: 300, incrementSeconds: 3 },
+  { id: "10+5", label: "10+5", baseSeconds: 600, incrementSeconds: 5 },
+  { id: "15+10", label: "15+10", baseSeconds: 900, incrementSeconds: 10 },
+  { id: "infinite", label: "Unlimited", baseSeconds: null, incrementSeconds: 0 },
+  { id: "custom", label: "Custom", custom: true },
+];
+export const CUSTOM_BASE_TIME_OPTIONS = [
+  30, 45, 60, 75, 90,
+  120, 150, 180, 240, 300,
+  360, 420, 480, 540, 600,
+  720, 900, 1200, 1500, 1800,
+  2400, 3000, 3600, 4500, 5400,
+  6300, 7200,
+];
+export const DEFAULT_MATCH_CONFIG = {
+  boardSize: 11,
+  baseSeconds: 180,
+  incrementSeconds: 2,
+  colorMode: "random",
+};
 
 export const mkBoard = (boardSize) => Array.from({ length: boardSize }, () => Array(boardSize).fill(null));
 export const pName = (player) => (player === "B" ? "Black" : "White");
 export const opp = (player) => (player === "B" ? "W" : "B");
 
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+export function nearestBaseTime(seconds) {
+  const numeric = Number(seconds);
+  if (!Number.isFinite(numeric)) {
+    return CUSTOM_BASE_TIME_OPTIONS[0];
+  }
+  return CUSTOM_BASE_TIME_OPTIONS.reduce((closest, candidate) => (
+    Math.abs(candidate - numeric) < Math.abs(closest - numeric) ? candidate : closest
+  ), CUSTOM_BASE_TIME_OPTIONS[0]);
+}
+
 export function sanitizeConfig(config = {}) {
   const boardSize = SIZE_OPTIONS.includes(config.boardSize) ? config.boardSize : 11;
-  const validTimer = TIMER_OPTIONS.some((option) => option.value === config.timerVal);
+  const colorMode = COLOR_MODE_OPTIONS.some((option) => option.value === config.colorMode) ? config.colorMode : DEFAULT_MATCH_CONFIG.colorMode;
+  const legacyBaseSeconds = config.baseSeconds !== undefined ? config.baseSeconds : config.timerVal;
+  const rawBaseSeconds = legacyBaseSeconds === null ? null : Number(legacyBaseSeconds);
+  const baseSeconds = rawBaseSeconds === null
+    ? null
+    : Number.isFinite(rawBaseSeconds)
+      ? nearestBaseTime(clamp(rawBaseSeconds, CUSTOM_BASE_TIME_OPTIONS[0], CUSTOM_BASE_TIME_OPTIONS[CUSTOM_BASE_TIME_OPTIONS.length - 1]))
+      : DEFAULT_MATCH_CONFIG.baseSeconds;
+  const rawIncrementSeconds = Number(config.incrementSeconds ?? 0);
+  const incrementSeconds = baseSeconds === null
+    ? 0
+    : Number.isFinite(rawIncrementSeconds)
+      ? clamp(Math.round(rawIncrementSeconds), 0, 60)
+      : DEFAULT_MATCH_CONFIG.incrementSeconds;
   return {
     boardSize,
-    timerVal: validTimer ? config.timerVal : null,
+    baseSeconds,
+    incrementSeconds,
+    colorMode,
   };
 }
 
@@ -48,11 +97,38 @@ export function formatTime(seconds) {
     return "INF";
   }
 
+  if (seconds >= 3600) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = seconds % 60;
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${remainder.toString().padStart(2, "0")}`;
+  }
+
   if (seconds >= 60) {
     return `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, "0")}`;
   }
 
   return `${seconds}s`;
+}
+
+export function formatClockSetting(config = {}) {
+  const cleanConfig = sanitizeConfig(config);
+  if (cleanConfig.baseSeconds === null) {
+    return "Unlimited";
+  }
+  const baseLabel = cleanConfig.baseSeconds < 60
+    ? `${cleanConfig.baseSeconds}s`
+    : cleanConfig.baseSeconds % 60 === 0
+      ? `${Math.round(cleanConfig.baseSeconds / 60)}`
+      : `${cleanConfig.baseSeconds}s`;
+  return `${baseLabel}+${cleanConfig.incrementSeconds}`;
+}
+
+export function formatColorSetting(config = {}) {
+  const cleanConfig = sanitizeConfig(config);
+  if (cleanConfig.colorMode === "black") return "Host plays Black";
+  if (cleanConfig.colorMode === "white") return "Host plays White";
+  return "Random colors";
 }
 
 export function starPoints(boardSize) {
@@ -113,7 +189,7 @@ export function createMatchState(config) {
   return {
     board: mkBoard(cleanConfig.boardSize),
     turn: "B",
-    times: { B: cleanConfig.timerVal, W: cleanConfig.timerVal },
+    times: { B: cleanConfig.baseSeconds, W: cleanConfig.baseSeconds },
     result: null,
     last: null,
   };
@@ -130,12 +206,19 @@ export function applyMove(state, config, row, col) {
   const nextBoard = state.board.map((line) => [...line]);
   nextBoard[row][col] = state.turn;
   const opponent = opp(state.turn);
+  const nextTimes = cleanConfig.baseSeconds === null
+    ? { ...state.times }
+    : {
+      ...state.times,
+      [state.turn]: Math.max(0, (state.times[state.turn] ?? 0) + cleanConfig.incrementSeconds),
+    };
   const patternOfFive = findPattern(nextBoard, boardSize, state.turn, 5, [row, col]);
 
   if (patternOfFive) {
     return {
       ...state,
       board: nextBoard,
+      times: nextTimes,
       last: [row, col],
       result: {
         winner: state.turn,
@@ -151,6 +234,7 @@ export function applyMove(state, config, row, col) {
     return {
       ...state,
       board: nextBoard,
+      times: nextTimes,
       last: [row, col],
       result: {
         winner: opponent,
@@ -164,6 +248,7 @@ export function applyMove(state, config, row, col) {
   return {
     ...state,
     board: nextBoard,
+    times: nextTimes,
     last: [row, col],
     turn: opponent,
   };
@@ -171,7 +256,7 @@ export function applyMove(state, config, row, col) {
 
 export function tickClock(state, config) {
   const cleanConfig = sanitizeConfig(config);
-  if (cleanConfig.timerVal === null || state.result) {
+  if (cleanConfig.baseSeconds === null || state.result) {
     return state;
   }
 
