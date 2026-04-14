@@ -1,0 +1,118 @@
+# Training run template for Anti-Gomoku AI
+# Copy to: configs/train_run.<run_id>.yaml and fill values before launch.
+
+run:
+  run_id: "ag_train_YYYYMMDD_HHMM_<shortgit>"
+  seed: 20260414
+  device: "cuda:0"
+  num_workers: 8
+  mixed_precision: true
+  deterministic: false
+
+paths:
+  raw_data_dir: "/train/data/raw"
+  processed_data_dir: "/train/data/processed"
+  features_cache_dir: "/train/data/features"
+  checkpoints_dir: "/train/artifacts/checkpoints"
+  runs_dir: "/train/artifacts/runs"
+  eval_dir: "/train/artifacts/eval"
+  exports_dir: "/train/artifacts/exports"
+
+code:
+  repo_path: "/train/repos/anti-gomoku-ai"
+  git_commit: "<required>"
+
+dataset:
+  dataset_version: "ds-YYYYMMDD-batchN"
+  board_sizes: [11]
+  include_human_games: true
+  include_selfplay_games: true
+  max_games: 0                # 0 = all available
+  train_split: 0.9
+  val_split: 0.1
+  deduplicate_positions: true
+  shuffle_buffer_size: 500000
+
+encoding:
+  planes:
+    - black_stones
+    - white_stones
+    - side_to_move
+    - last_move
+    - row_index
+    - col_index
+  legal_move_mask: true
+
+model:
+  name: "ag_small_transformer"
+  type: "transformer"
+  hidden_size: 192
+  num_layers: 6
+  num_heads: 4
+  dropout: 0.1
+  value_head_hidden: 128
+  policy_head: "flat_logits"
+
+optimization:
+  epochs: 20
+  global_batch_size: 256
+  gradient_accumulation_steps: 1
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  warmup_steps: 2000
+  scheduler: "cosine"
+  grad_clip_norm: 1.0
+  loss_weights:
+    policy: 1.0
+    value: 1.0
+
+selfplay:
+  enabled: true
+  games_per_iteration: 2000
+  mcts_simulations: 300
+  c_puct: 1.25
+  dirichlet_alpha: 0.30
+  root_noise_epsilon: 0.25
+  temperature:
+    opening_moves: 12
+    tau_opening: 1.0
+    tau_late: 0.1
+  resign:
+    enabled: false
+    threshold: -0.95
+
+evaluation:
+  enabled: true
+  arena_games: 400
+  compare_against:
+    - "production"
+    - "previous"
+    - "search_baseline"
+  tactical_suite_path: "/train/artifacts/eval/tactical_suite.json"
+  gates:
+    min_win_rate_vs_production: 0.55
+    max_p95_latency_ms: 250
+    max_timeout_rate: 0.01
+    require_tactical_non_regression: true
+
+export:
+  enabled: true
+  format: "onnx"
+  opset: 17
+  dynamic_axes: false
+  out_dir: "/train/artifacts/exports/${run.run_id}"
+  model_version: "ag-az-YYYYMMDD-rN"
+
+inference_budget:
+  per_move_timeout_ms: 600
+  fallback_policy: "search_baseline"
+  legal_move_recheck: true
+
+logging:
+  interval_steps: 100
+  save_every_steps: 1000
+  keep_last_n_checkpoints: 10
+  tensorboard: true
+  wandb:
+    enabled: false
+    project: "anti-gomoku-ai"

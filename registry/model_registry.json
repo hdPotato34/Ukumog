@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "project": "anti-gomoku-ai",
+  "updatedAt": "2026-04-14T00:00:00Z",
+  "active": {
+    "production": {
+      "modelVersion": "ag-az-2026-04-14-r1",
+      "artifactPath": "/train/artifacts/exports/ag-az-2026-04-14-r1/model.onnx",
+      "configPath": "/train/artifacts/exports/ag-az-2026-04-14-r1/inference_config.json",
+      "status": "serving",
+      "notes": "Current stable model"
+    },
+    "candidate": {
+      "modelVersion": "",
+      "artifactPath": "",
+      "configPath": "",
+      "status": "idle",
+      "notes": "Set when a new candidate passes evaluation"
+    },
+    "rollback": {
+      "modelVersion": "ag-az-2026-04-07-r3",
+      "artifactPath": "/train/artifacts/exports/ag-az-2026-04-07-r3/model.onnx",
+      "configPath": "/train/artifacts/exports/ag-az-2026-04-07-r3/inference_config.json",
+      "status": "ready",
+      "notes": "Last known good model"
+    }
+  },
+  "gates": {
+    "minWinRateVsProduction": 0.55,
+    "maxP95LatencyMs": 250,
+    "maxTimeoutRate": 0.01,
+    "requireTacticalSuiteNonRegression": true
+  },
+  "models": [
+    {
+      "modelVersion": "ag-az-2026-04-14-r1",
+      "runId": "ag_train_20260414_0910_a1b2c3d",
+      "datasetVersion": "ds-20260414-batch3",
+      "artifactPath": "/train/artifacts/exports/ag-az-2026-04-14-r1/model.onnx",
+      "configPath": "/train/artifacts/exports/ag-az-2026-04-14-r1/inference_config.json",
+      "metricsPath": "/train/artifacts/eval/ag-az-2026-04-14-r1/summary.json",
+      "createdAt": "2026-04-14T09:35:00Z",
+      "status": "production",
+      "metrics": {
+        "winRateVsPrev": 0.581,
+        "tacticalPassRate": 0.942,
+        "p95LatencyMs": 188,
+        "timeoutRate": 0.004
+      },
+      "notes": "Promoted after gate checks"
+    }
+  ]
+}

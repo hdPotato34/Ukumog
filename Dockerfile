@@ -17,7 +17,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 COPY server.mjs game-core.mjs ./
 COPY --from=build /app/site ./site
 
