@@ -1,0 +1,21 @@
+# Runtime/data outputs (do not commit)
+data/
+artifacts/
+
+# Local environment / secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Python cache/logs (if model server uses Python)
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Node cache/logs (if model server uses Node)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
