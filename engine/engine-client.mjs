@@ -6,7 +6,7 @@ export class LocalEngineClient {
   } = {}) {
     this.enginePack = enginePack || null;
     this.enginePackUrl = enginePackUrl;
-    this.workerFactory = workerFactory || (() => new Worker(new URL("./engine-worker.mjs", import.meta.url), { type: "module" }));
+    this.workerFactory = workerFactory || (() => new Worker(new URL("./engine-worker.js", import.meta.url), { type: "module" }));
     this.worker = null;
     this.requests = new Map();
     this.nextId = 1;

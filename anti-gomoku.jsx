@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_MATCH_CONFIG, sanitizeConfig } from "./game-core.mjs";
-import { LocalGame, OnlineGame, ReviewGame } from "./game-ui.jsx";
+import { DEFAULT_MATCH_CONFIG, sanitizeConfig, tickClock } from "./game-core.mjs";
+import { EngineGame, LocalGame, OnlineGame, ReviewGame } from "./game-ui.jsx";
 import { HallPage, LoadingPage, ProfilePage } from "./hub-ui.jsx";
 import {
   buildInviteLink,
@@ -39,6 +39,8 @@ import {
   upsertArchivedRecord,
   deleteArchivedRecord,
 } from "./game-record.mjs";
+import { LocalEngineClient } from "./engine/engine-client.mjs";
+import { applyEngineRoomMove, canPlayerMoveInEngineRoom, createEngineRoomSession, markEngineThinking, setEngineRoomError } from "./engine-room.mjs";
 
 const LOBBY_POLL_MS = 4000;
 const ROOM_POLL_MS = 1000;
@@ -91,6 +93,7 @@ export default function App() {
   const [challengeConfig, setChallengeConfig] = useState(() => sanitizeConfig(DEFAULT_MATCH_CONFIG));
   const [challengePublicVisible, setChallengePublicVisible] = useState(true);
   const [onlineSession, setOnlineSession] = useState(null);
+  const [engineSession, setEngineSession] = useState(null);
   const [reviewSession, setReviewSession] = useState(null);
   const [localConfig, setLocalConfig] = useState(() => sanitizeConfig(DEFAULT_MATCH_CONFIG));
   const [localGameKey, setLocalGameKey] = useState(0);
@@ -129,9 +132,12 @@ export default function App() {
   const pendingInviteRef = useRef(initialInvite);
   const screenRef = useRef(screen);
   const onlineSessionRef = useRef(onlineSession);
+  const engineSessionRef = useRef(engineSession);
   const roomPollKeyRef = useRef(0);
   const savedOnlineGameIdsRef = useRef(new Set());
+  const savedEngineGameIdsRef = useRef(new Set());
   const lastRoomAlertRef = useRef("");
+  const engineClientRef = useRef(null);
 
   useEffect(() => {
     sessionTokenRef.current = sessionToken;
@@ -145,6 +151,10 @@ export default function App() {
     onlineSessionRef.current = onlineSession;
   }, [onlineSession]);
 
+  useEffect(() => {
+    engineSessionRef.current = engineSession;
+  }, [engineSession]);
+
   useEffect(() => () => {
     if (roomPollTimerRef.current) clearTimeout(roomPollTimerRef.current);
     if (lobbyPollTimerRef.current) clearTimeout(lobbyPollTimerRef.current);
@@ -153,6 +163,10 @@ export default function App() {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     if (roomAbortRef.current) roomAbortRef.current.abort();
     if (lobbyAbortRef.current) lobbyAbortRef.current.abort();
+    if (engineClientRef.current) {
+      engineClientRef.current.dispose();
+      engineClientRef.current = null;
+    }
   }, []);
 
   const closeMenus = () => {
@@ -292,7 +306,7 @@ export default function App() {
   const scheduleLobbyPolling = () => {
     stopLobbyPolling();
     const tick = async () => {
-      if (screenRef.current === "room" || screenRef.current === "local") return;
+      if (screenRef.current === "room" || screenRef.current === "local" || screenRef.current === "engine") return;
       await refreshLobby();
       lobbyPollTimerRef.current = setTimeout(tick, LOBBY_POLL_MS);
     };
@@ -476,7 +490,7 @@ export default function App() {
 
   useEffect(() => {
     if (bootstrapping || !sessionToken) return;
-    if (screen === "room" || screen === "local") return;
+    if (screen === "room" || screen === "local" || screen === "engine") return;
     scheduleLobbyPolling();
     return () => stopLobbyPolling();
   }, [bootstrapping, sessionToken, screen]);
@@ -490,6 +504,42 @@ export default function App() {
     if (screen !== "room") {
       stopRoomPolling();
     }
+  }, [screen]);
+
+  useEffect(() => {
+    if (screen !== "engine" || !engineSession || engineSession.config.baseSeconds === null || engineSession.phase !== "active" || engineSession.gameState.result) {
+      return undefined;
+    }
+
+    const id = setInterval(() => {
+      setEngineSession((prev) => {
+        if (!prev || prev.phase !== "active" || prev.gameState.result) {
+          return prev;
+        }
+        const nextState = tickClock(prev.gameState, prev.config);
+        if (nextState === prev.gameState) {
+          return prev;
+        }
+        return {
+          ...prev,
+          gameState: nextState,
+          phase: nextState.result ? "finished" : prev.phase,
+          engineStatus: nextState.result ? "idle" : prev.engineStatus,
+        };
+      });
+    }, 1000);
+
+    return () => clearInterval(id);
+  }, [screen, engineSession]);
+
+  useEffect(() => {
+    if (screen === "engine") {
+      return undefined;
+    }
+    if (engineClientRef.current) {
+      void engineClientRef.current.cancel().catch(() => {});
+    }
+    return undefined;
   }, [screen]);
 
   useEffect(() => {
@@ -521,6 +571,90 @@ export default function App() {
     savedOnlineGameIdsRef.current.add(game.id);
     void refreshMatchHistoryData();
   }, [onlineSession]);
+
+  useEffect(() => {
+    const game = engineSession?.game;
+    if (!game?.id || engineSession?.phase !== "finished" || !engineSession?.gameState?.result) {
+      return;
+    }
+    if (savedEngineGameIdsRef.current.has(game.id)) {
+      return;
+    }
+    if (!game.moves?.length) {
+      return;
+    }
+
+    const record = buildRecordFromMoves(engineSession.config, game.moves, {
+      title: `Local Engine Match ${engineSession.config.boardSize}x${engineSession.config.boardSize}`,
+      sourceKind: "local",
+      sourceLabel: "Local Engine Match",
+      gameId: game.id,
+      gameIndex: game.index,
+      players: game.players || null,
+      result: engineSession.gameState.result,
+      tags: ["engine"],
+    });
+    saveRecordArchive(record, "Engine match saved to your archive.");
+    savedEngineGameIdsRef.current.add(game.id);
+  }, [engineSession]);
+
+  useEffect(() => {
+    const currentSession = engineSession;
+    if (screen !== "engine" || !currentSession || currentSession.phase !== "active" || currentSession.engineStatus !== "idle") {
+      return undefined;
+    }
+    if (currentSession.gameState.result || currentSession.gameState.turn !== currentSession.engineSide) {
+      return undefined;
+    }
+
+    if (!engineClientRef.current) {
+      engineClientRef.current = new LocalEngineClient();
+      void engineClientRef.current.init().catch(() => {});
+    }
+
+    const sessionGameId = currentSession.game.id;
+    setEngineSession((prev) => (prev?.game?.id === sessionGameId ? markEngineThinking(prev) : prev));
+
+    let cancelled = false;
+    void engineClientRef.current.searchMove({
+      state: currentSession.gameState,
+      config: currentSession.config,
+      timeBudgetMs: currentSession.config.baseSeconds === null ? 350 : 450,
+      maxDepth: 5,
+    }).then((analysis) => {
+      if (cancelled) return;
+      setEngineSession((prev) => {
+        if (!prev || prev.game.id !== sessionGameId || prev.phase !== "active" || prev.gameState.turn !== prev.engineSide) {
+          return prev;
+        }
+        if (!analysis?.bestMove) {
+          return setEngineRoomError(prev, "The local engine did not return a move.");
+        }
+        try {
+          return applyEngineRoomMove(prev, analysis.bestMove, {
+            actor: "engine",
+            analysis,
+          });
+        } catch (error) {
+          return setEngineRoomError(prev, error instanceof Error ? error.message : "The engine returned an illegal move.");
+        }
+      });
+    }).catch((error) => {
+      if (cancelled) return;
+      setEngineSession((prev) => (
+        prev?.game?.id === sessionGameId
+          ? setEngineRoomError(prev, error instanceof Error ? error.message : "The local engine move failed.")
+          : prev
+      ));
+    });
+
+    return () => {
+      cancelled = true;
+      if (engineClientRef.current) {
+        void engineClientRef.current.cancel().catch(() => {});
+      }
+    };
+  }, [screen, engineSession]);
 
   useEffect(() => {
     if (screen !== "room" || !onlineSession?.requests || !onlineSession?.role) {
@@ -757,6 +891,13 @@ export default function App() {
     setAppNotice("");
   };
 
+  const handleStartEngine = () => {
+    closeMenus();
+    setEngineSession(createEngineRoomSession(createConfig, viewer));
+    setScreen("engine");
+    setAppNotice("");
+  };
+
   const handleSaveLocalRecord = ({ config, moves, state }) => {
     if (!moves?.length) return;
     const record = buildRecordFromMoves(config, moves, {
@@ -767,6 +908,35 @@ export default function App() {
     });
     const saved = saveRecordArchive(record, "Local record saved to your archive.");
     openReviewRecord(saved, { backScreen: "hall" });
+  };
+
+  const buildCurrentEngineRecord = () => {
+    if (!engineSession?.game?.moves?.length) {
+      return null;
+    }
+    return buildRecordFromMoves(engineSession.config, engineSession.game.moves, {
+      title: `Local Engine Match ${engineSession.config.boardSize}x${engineSession.config.boardSize}`,
+      sourceKind: "local",
+      sourceLabel: "Local Engine Match",
+      gameId: engineSession.game.id,
+      gameIndex: engineSession.game.index,
+      players: engineSession.game.players || null,
+      result: engineSession.gameState?.result || null,
+      tags: ["engine"],
+    });
+  };
+
+  const handleSaveEngineRecord = ({ openReview = false } = {}) => {
+    const record = buildCurrentEngineRecord();
+    if (!record) {
+      setAppNotice("This engine match has no moves to save yet.");
+      return null;
+    }
+    const saved = saveRecordArchive(record, "Engine match saved to your archive.");
+    if (openReview) {
+      openReviewRecord(saved, { backScreen: "engine" });
+    }
+    return saved;
   };
 
   const handleOpenCurrentOnlineRecord = () => {
@@ -793,6 +963,22 @@ export default function App() {
       return;
     }
     openReviewRecord(record, { backScreen: "room" });
+  };
+
+  const handleOpenCurrentEngineRecord = () => {
+    const gameId = engineSession?.game?.id;
+    if (!gameId) {
+      setAppNotice("This engine match is not ready for review yet.");
+      return;
+    }
+    let record = findArchivedRecordByGameId(gameId);
+    if (!record) {
+      record = handleSaveEngineRecord();
+    }
+    if (!record) {
+      return;
+    }
+    openReviewRecord(record, { backScreen: "engine" });
   };
 
   const handleOpenHistoryRecord = (entry) => {
@@ -827,6 +1013,32 @@ export default function App() {
     } catch (error) {
       setOnlineSession((prev) => prev ? { ...prev, lastError: error instanceof Error ? error.message : "Could not submit the move." } : prev);
     }
+  };
+
+  const handleEngineMove = (row, col) => {
+    setEngineSession((prev) => {
+      if (!prev || !canPlayerMoveInEngineRoom(prev)) {
+        return prev;
+      }
+      try {
+        return applyEngineRoomMove(prev, { row, col }, { actor: "player" });
+      } catch (error) {
+        return {
+          ...prev,
+          lastError: error instanceof Error ? error.message : "Could not submit the local move.",
+        };
+      }
+    });
+  };
+
+  const closeEngineView = (nextNotice = "") => {
+    if (engineClientRef.current) {
+      void engineClientRef.current.cancel().catch(() => {});
+    }
+    setEngineSession(null);
+    setScreen("hall");
+    setAppNotice(nextNotice);
+    scheduleLobbyPolling();
   };
 
   const handleRematch = async () => {
@@ -885,6 +1097,19 @@ export default function App() {
 
   if (screen === "local") {
     return <LocalGame key={localGameKey} config={localConfig} onMenu={() => setScreen("hall")} onSaveRecord={handleSaveLocalRecord} />;
+  }
+
+  if (screen === "engine" && engineSession) {
+    return (
+      <EngineGame
+        session={engineSession}
+        onMove={handleEngineMove}
+        onBackToHall={() => { closeEngineView(""); }}
+        onLeave={() => { closeEngineView(""); }}
+        onSaveRecord={() => { handleSaveEngineRecord({ openReview: false }); }}
+        onReview={handleOpenCurrentEngineRecord}
+      />
+    );
   }
 
   if (screen === "room" && onlineSession) {
@@ -979,6 +1204,7 @@ export default function App() {
       onCreatePublic={() => { void handleCreatePublicRoom(); }}
       onOpenRoom={(room) => { void handleOpenRoom(room); }}
       onStartLocal={handleStartLocal}
+      onStartEngine={handleStartEngine}
       searchQuery={searchQuery}
       searchResults={searchResults}
       searchLoading={searchLoading}

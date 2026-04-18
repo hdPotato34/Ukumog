@@ -25,6 +25,8 @@ import {
   replayRecord,
 } from "./game-record.mjs";
 import { copyTextToClipboard } from "./online-room.mjs";
+import { LocalEngineClient } from "./engine/engine-client.mjs";
+import { analysisBarPercent, formatAnalysisScore, nextMainlineNodeToAnalyze } from "./review-analysis.mjs";
 
 const BASE_CSS = `@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');*{box-sizing:border-box}button,input{transition:all .15s ease}button,input,textarea{font:inherit}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}.tb-btn:hover:not(:disabled){color:#c8b060!important;border-color:#6a5030!important}.ng-btn:hover:not(:disabled),.start-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}.menu-btn:hover{color:#a89060!important;border-color:#4a3820!important}.panel-input:focus{outline:none;border-color:#8d713e!important;box-shadow:0 0 0 2px rgba(232,201,106,.08)}`;
 
@@ -823,7 +825,17 @@ function ReviewToast({ message }) {
   );
 }
 
-function ReviewMoveList({ record, currentNodeId, onJump }) {
+function ReviewMoveList({ record, currentNodeId, onJump, analysisByNodeId = {} }) {
+  const renderMoveCell = (nodeId, node) => {
+    const analysis = nodeId ? analysisByNodeId[nodeId] : null;
+    return (
+      <div style={{ display: "grid", gap: 3 }}>
+        <div>{node ? node.move.notation : ""}</div>
+        <div style={{ fontSize: 10, color: analysis ? "#a98f5e" : "#57472b" }}>{analysis ? formatAnalysisScore(analysis) : ""}</div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ borderRadius: 14, border: "1px solid #20170f", overflow: "hidden", background: "#0e141b" }}>
       <div style={{ display: "grid", gridTemplateColumns: "56px minmax(0, 1fr) minmax(0, 1fr)", gap: 0, borderBottom: "1px solid #241b11", background: "#121922", fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#8d7444" }}>
@@ -843,11 +855,38 @@ function ReviewMoveList({ record, currentNodeId, onJump }) {
           return (
             <div key={`row-${rowIndex}`} style={{ display: "grid", gridTemplateColumns: "56px minmax(0, 1fr) minmax(0, 1fr)", borderBottom: rowIndex === Math.ceil((path.length - 1) / 2) - 1 ? "none" : "1px solid #19130c" }}>
               <div style={{ padding: "10px 8px", fontFamily: "'DM Sans'", fontSize: 11, color: "#9b8253" }}>{rowIndex + 1}</div>
-              <button className="ghost-btn" onClick={() => blackNodeId && onJump(blackNodeId)} disabled={!blackNodeId} style={{ ...ghostButton(!blackNodeId), border: "none", borderLeft: "1px solid #241b11", borderRadius: 0, textAlign: "left", padding: "10px 10px", background: currentNodeId === blackNodeId ? "rgba(232,201,106,0.12)" : "transparent", color: blackNode ? "#e8dcc8" : "#57472b" }}>{blackNode ? blackNode.move.notation : ""}</button>
-              <button className="ghost-btn" onClick={() => whiteNodeId && onJump(whiteNodeId)} disabled={!whiteNodeId} style={{ ...ghostButton(!whiteNodeId), border: "none", borderLeft: "1px solid #241b11", borderRadius: 0, textAlign: "left", padding: "10px 10px", background: currentNodeId === whiteNodeId ? "rgba(232,201,106,0.12)" : "transparent", color: whiteNode ? "#e8dcc8" : "#57472b" }}>{whiteNode ? whiteNode.move.notation : ""}</button>
+              <button className="ghost-btn" onClick={() => blackNodeId && onJump(blackNodeId)} disabled={!blackNodeId} style={{ ...ghostButton(!blackNodeId), border: "none", borderLeft: "1px solid #241b11", borderRadius: 0, textAlign: "left", padding: "10px 10px", background: currentNodeId === blackNodeId ? "rgba(232,201,106,0.12)" : "transparent", color: blackNode ? "#e8dcc8" : "#57472b" }}>{renderMoveCell(blackNodeId, blackNode)}</button>
+              <button className="ghost-btn" onClick={() => whiteNodeId && onJump(whiteNodeId)} disabled={!whiteNodeId} style={{ ...ghostButton(!whiteNodeId), border: "none", borderLeft: "1px solid #241b11", borderRadius: 0, textAlign: "left", padding: "10px 10px", background: currentNodeId === whiteNodeId ? "rgba(232,201,106,0.12)" : "transparent", color: whiteNode ? "#e8dcc8" : "#57472b" }}>{renderMoveCell(whiteNodeId, whiteNode)}</button>
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function ReviewAnalysisCard({ analysis, status }) {
+  const percent = analysisBarPercent(analysis);
+  const scoreText = analysis ? formatAnalysisScore(analysis) : status === "loading" ? "Analyzing..." : "N/A";
+  const pvText = Array.isArray(analysis?.pv) && analysis.pv.length
+    ? analysis.pv.map((move) => move.notation || moveToNotation(move.row, move.col)).join(" ")
+    : "N/A";
+
+  return (
+    <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px", display: "grid", gap: 14 }}>
+      <div style={{ fontSize: 22, color: GOLD }}>Engine Analysis</div>
+      <div style={{ display: "grid", gridTemplateColumns: "32px minmax(0, 1fr)", gap: 12, alignItems: "stretch" }}>
+        <div style={{ borderRadius: 999, border: "1px solid #2a2018", overflow: "hidden", background: "#0b1016", minHeight: 180, display: "flex", flexDirection: "column-reverse" }}>
+          <div style={{ height: `${percent}%`, background: "linear-gradient(180deg, #e8c96a, #f3ddb0)" }} />
+        </div>
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#d2bd92", lineHeight: 1.8 }}>
+          <div>Score: {scoreText}</div>
+          <div>Status: {status === "loading" ? "Analyzing" : status === "error" ? "Error" : analysis ? "Ready" : "Idle"}</div>
+          <div>Depth: {analysis?.depth ?? "N/A"}</div>
+          <div>Nodes: {analysis?.nodes ?? "N/A"}</div>
+          <div>Time: {typeof analysis?.timeMs === "number" ? `${analysis.timeMs} ms` : "N/A"}</div>
+          <div>PV: {pvText}</div>
+        </div>
       </div>
     </div>
   );
@@ -1055,6 +1094,85 @@ export function LocalGame({ config, onMenu, onSaveRecord }) {
   return <Shell config={config} state={state} active={state.result ? null : state.turn} canPlace={!state.result} onPlace={place} onBack={onMenu} backLabel="<- Hall" rightLabel="Local" status={<Status state={state} message={`${pName(state.turn)}'s turn`} />} controls={<><button className="tb-btn" onClick={takeback} disabled={!history.length} style={actionBtn("ghost", !history.length)}>Takeback</button><button className="tb-btn" onClick={() => setAnnotationResetToken((token) => token + 1)} style={actionBtn("ghost", false)}>Clear Marks</button><button className="tb-btn" onClick={() => onSaveRecord({ config, moves, state })} disabled={!moves.length} style={actionBtn("ghost", !moves.length)}>Save Record</button><button className="ng-btn" onClick={onMenu} style={actionBtn("solid")}>Leave Practice</button></>} annotationScopeKey={`local-${config.boardSize}`} annotationResetToken={annotationResetToken} />;
 }
 
+export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecord, onReview }) {
+  const config = session.config;
+  const state = session.gameState || createMatchState(config);
+  const canPlace = session.phase === "active" && !state.result && session.engineStatus !== "thinking" && state.turn === session.playerSide;
+  const [annotationResetToken, setAnnotationResetToken] = useState(0);
+  const playerLabel = session.playerSide === "B" ? "You are Black" : "You are White";
+  const engineLabel = session.engineSide === "B" ? "Engine plays Black" : "Engine plays White";
+  const scoreLabel = session.analysis?.mate
+    ? `#${session.analysis.mate}`
+    : typeof session.analysis?.score === "number"
+      ? `${session.analysis.score > 0 ? "+" : ""}${session.analysis.score}`
+      : null;
+  const pvLabel = Array.isArray(session.analysis?.pv) && session.analysis.pv.length
+    ? session.analysis.pv.map((move) => move.notation || moveToNotation(move.row, move.col)).join(" ")
+    : "";
+
+  let message = session.notice || "";
+  let sub = session.lastError || `${playerLabel}. ${engineLabel}.`;
+  if (!state.result) {
+    message = `${pName(state.turn)}'s turn`;
+    if (session.engineStatus === "thinking") {
+      sub = session.lastError || `${engineLabel}. Thinking locally...`;
+    } else if (canPlace) {
+      sub = session.lastError || `${playerLabel}. Your move.`;
+    } else {
+      sub = session.lastError || `${engineLabel}. Waiting for the engine move.`;
+    }
+  } else {
+    sub = session.lastError || "The engine match is finished. You can review or save the record.";
+  }
+
+  return (
+    <Shell
+      config={config}
+      state={state}
+      active={state.result ? null : state.turn}
+      canPlace={canPlace}
+      onPlace={onMove}
+      onBack={onBackToHall}
+      backLabel="<- Hall"
+      rightLabel={`Local Engine | ${playerLabel}`}
+      status={<Status state={state} message={message} sub={sub} />}
+      annotationScopeKey={session.game?.id || `engine-${config.boardSize}`}
+      annotationResetToken={annotationResetToken}
+      controls={(
+        <>
+          <button className="tb-btn" onClick={() => setAnnotationResetToken((token) => token + 1)} style={actionBtn("ghost", false)}>Clear Marks</button>
+          <button className="tb-btn" onClick={onSaveRecord} disabled={!session.game?.moves?.length} style={actionBtn("ghost", !session.game?.moves?.length)}>Save Record</button>
+          <button className="tb-btn" onClick={onReview} disabled={!session.game?.moves?.length} style={actionBtn("ghost", !session.game?.moves?.length)}>Review</button>
+          <button className="tb-btn" onClick={onBackToHall} style={actionBtn("ghost", false)}>Back To Hall</button>
+          <button className="ng-btn" onClick={onLeave} style={actionBtn("solid")}>Leave Match</button>
+        </>
+      )}
+      footerPanels={(
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+          <div style={{ border: "1px solid #2a2018", borderRadius: 10, background: "#11161d", padding: "12px 14px", display: "grid", gap: 8 }}>
+            <div style={{ fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#7b6740" }}>Engine Status</div>
+            <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#dcc798", lineHeight: 1.7 }}>
+              <div>State: {session.engineStatus === "thinking" ? "Thinking" : session.engineStatus === "error" ? "Error" : "Idle"}</div>
+              <div>Game: {session.game?.id || "Pending"}</div>
+              <div>Moves: {session.game?.moves?.length || 0}</div>
+            </div>
+          </div>
+          <div style={{ border: "1px solid #2a2018", borderRadius: 10, background: "#11161d", padding: "12px 14px", display: "grid", gap: 8 }}>
+            <div style={{ fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#7b6740" }}>Latest Search</div>
+            <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#dcc798", lineHeight: 1.7 }}>
+              <div>Score: {scoreLabel || "N/A"}</div>
+              <div>Depth: {session.analysis?.depth ?? "N/A"}</div>
+              <div>Nodes: {session.analysis?.nodes ?? "N/A"}</div>
+              <div>Time: {typeof session.analysis?.timeMs === "number" ? `${session.analysis.timeMs} ms` : "N/A"}</div>
+              <div>PV: {pvLabel || "N/A"}</div>
+            </div>
+          </div>
+        </div>
+      )}
+    />
+  );
+}
+
 export function OnlineGame({ session, shareLink, inviteCopied, onCopyInvite, onMove, onBackToHall, onLeave, onRematch, onReview, onRoomAction, onSendChat }) {
   const config = session.config;
   const state = session.gameState || createMatchState(config);
@@ -1147,6 +1265,10 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveTitle, setSaveTitle] = useState(record.meta?.title || "");
   const [annotationResetToken, setAnnotationResetToken] = useState(0);
+  const [analysisByNodeId, setAnalysisByNodeId] = useState({});
+  const [analysisStatusByNodeId, setAnalysisStatusByNodeId] = useState({});
+  const focusEngineRef = useRef(null);
+  const backgroundEngineRef = useRef(null);
 
   useEffect(() => {
     if (!feedback) return undefined;
@@ -1158,7 +1280,26 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
     setActiveNodeId(currentNodeId || findDeepestMainlineNode(record));
     setSaveTitle(record.meta?.title || "");
     setAnnotationResetToken(0);
+    setAnalysisByNodeId({});
+    setAnalysisStatusByNodeId({});
   }, [record, currentNodeId]);
+
+  useEffect(() => {
+    if (!focusEngineRef.current) {
+      focusEngineRef.current = new LocalEngineClient();
+      void focusEngineRef.current.init().catch(() => {});
+    }
+    if (!backgroundEngineRef.current) {
+      backgroundEngineRef.current = new LocalEngineClient();
+      void backgroundEngineRef.current.init().catch(() => {});
+    }
+    return () => {
+      focusEngineRef.current?.dispose();
+      backgroundEngineRef.current?.dispose();
+      focusEngineRef.current = null;
+      backgroundEngineRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -1207,6 +1348,35 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [record, activeNodeId]);
 
+  useEffect(() => {
+    if (!focusEngineRef.current || analysisByNodeId[activeNodeId] || analysisStatusByNodeId[activeNodeId] === "loading") {
+      return undefined;
+    }
+
+    const replay = replayRecord(record, activeNodeId);
+    let cancelled = false;
+    setAnalysisStatusByNodeId((prev) => ({ ...prev, [activeNodeId]: "loading" }));
+
+    void focusEngineRef.current.analyzePosition({
+      state: replay.state,
+      config: record.config,
+      timeBudgetMs: 220,
+      maxDepth: 5,
+    }).then((analysis) => {
+      if (cancelled) return;
+      setAnalysisByNodeId((prev) => ({ ...prev, [activeNodeId]: analysis }));
+      setAnalysisStatusByNodeId((prev) => ({ ...prev, [activeNodeId]: "ready" }));
+    }).catch(() => {
+      if (cancelled) return;
+      setAnalysisStatusByNodeId((prev) => ({ ...prev, [activeNodeId]: "error" }));
+    });
+
+    return () => {
+      cancelled = true;
+      void focusEngineRef.current?.cancel().catch(() => {});
+    };
+  }, [record, activeNodeId, analysisByNodeId, analysisStatusByNodeId]);
+
   const replay = replayRecord(record, activeNodeId);
   const path = getNodePath(record, activeNodeId);
   const parentId = path.length > 1 ? path[path.length - 2] : record.rootId;
@@ -1214,6 +1384,38 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   const timeline = getTimeline(record, activeNodeId);
   const previousBranchNodeId = cycleBranchNode(record, activeNodeId, -1);
   const nextBranchNodeId = cycleBranchNode(record, activeNodeId, 1);
+  const currentAnalysis = analysisByNodeId[activeNodeId] || null;
+  const currentAnalysisStatus = analysisStatusByNodeId[activeNodeId] || "idle";
+  const nextBackgroundNodeId = nextMainlineNodeToAnalyze(record, analysisByNodeId, analysisStatusByNodeId, activeNodeId);
+
+  useEffect(() => {
+    if (!backgroundEngineRef.current || !nextBackgroundNodeId) {
+      return undefined;
+    }
+
+    const replayForBackground = replayRecord(record, nextBackgroundNodeId);
+    let cancelled = false;
+    setAnalysisStatusByNodeId((prev) => ({ ...prev, [nextBackgroundNodeId]: "loading" }));
+
+    void backgroundEngineRef.current.analyzePosition({
+      state: replayForBackground.state,
+      config: record.config,
+      timeBudgetMs: 140,
+      maxDepth: 4,
+    }).then((analysis) => {
+      if (cancelled) return;
+      setAnalysisByNodeId((prev) => ({ ...prev, [nextBackgroundNodeId]: analysis }));
+      setAnalysisStatusByNodeId((prev) => ({ ...prev, [nextBackgroundNodeId]: "ready" }));
+    }).catch(() => {
+      if (cancelled) return;
+      setAnalysisStatusByNodeId((prev) => ({ ...prev, [nextBackgroundNodeId]: "error" }));
+    });
+
+    return () => {
+      cancelled = true;
+      void backgroundEngineRef.current?.cancel().catch(() => {});
+    };
+  }, [record, nextBackgroundNodeId]);
 
   const persistRecord = async (nextRecord, message, nextNodeId = activeNodeId) => {
     const saved = await onSaveRecord(nextRecord);
@@ -1329,12 +1531,13 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
           <div style={{ display: "grid", gap: 16 }}>
             <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px" }}>
               <div style={{ fontSize: 22, color: GOLD, marginBottom: 10 }}>Move Trail</div>
-              <ReviewMoveList record={record} currentNodeId={activeNodeId} onJump={setActiveNodeId} />
+              <ReviewMoveList record={record} currentNodeId={activeNodeId} onJump={setActiveNodeId} analysisByNodeId={analysisByNodeId} />
             </div>
             <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px" }}>
               <div style={{ fontSize: 22, color: GOLD, marginBottom: 10 }}>Branches</div>
               <ReviewBranchPanel record={record} currentNodeId={activeNodeId} onJump={setActiveNodeId} />
             </div>
+            <ReviewAnalysisCard analysis={currentAnalysis} status={currentAnalysisStatus} />
             <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px" }}>
               <div style={{ fontSize: 22, color: GOLD, marginBottom: 10 }}>Current Position</div>
               <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#d2bd92", lineHeight: 1.8 }}>

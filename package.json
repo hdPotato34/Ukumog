@@ -30,8 +30,7 @@
     },
     "files": [
       "electron/**/*",
-      "site/index.html",
-      "site/renderer.js",
+      "site/**/*",
       "package.json"
     ],
     "extraResources": [

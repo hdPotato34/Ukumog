@@ -614,14 +614,15 @@ function VisibilityField({ value, onChange, helpText }) {
   );
 }
 
-function CreateRoomModal({ open, onClose, createConfig, createPublicVisible, onConfigChange, onCreatePublicVisibleChange, onCreatePublic, onStartLocal }) {
+function CreateRoomModal({ open, onClose, createConfig, createPublicVisible, onConfigChange, onCreatePublicVisibleChange, onCreatePublic, onStartLocal, onStartEngine }) {
   return (
-    <ModalShell open={open} onClose={onClose} title="Create Room" sub="Configure the board once, then start an online room or a local practice board.">
+    <ModalShell open={open} onClose={onClose} title="Create Room" sub="Configure the board once, then start an online room, a local practice board, or a local engine match.">
       <MatchConfigFields config={createConfig} onConfigChange={(nextConfig) => onConfigChange(sanitizeConfig(nextConfig))} />
       <VisibilityField value={createPublicVisible} onChange={onCreatePublicVisibleChange} helpText="Visible rooms show up in the public room browser while waiting, and started games can be watched." />
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="hub-btn" onClick={onCreatePublic} style={solidButton(false)}>Create Online Room</button>
         <button className="ghost-btn" onClick={onStartLocal} style={ghostButton(false)}>Local Practice</button>
+        <button className="ghost-btn" onClick={onStartEngine} style={ghostButton(false)}>Play vs Engine</button>
       </div>
     </ModalShell>
   );
@@ -990,6 +991,7 @@ export function HallPage(props) {
     onCreatePublic,
     onOpenRoom,
     onStartLocal,
+    onStartEngine,
     searchQuery,
     searchResults,
     searchLoading,
@@ -1042,7 +1044,7 @@ export function HallPage(props) {
 
         <Section title="Hall" sub="Keep the home screen light: search at the top, then enter the exact room action you want from one of these four panels.">
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
-            <HallActionCard title="Create Room" count={null} description="Open a new public room or spin up a local board with the same match settings." actionLabel="Configure" onOpen={() => setActivePanel("create")} />
+            <HallActionCard title="Create Room" count={null} description="Open a new public room, a local practice board, or a local engine match with the same match settings." actionLabel="Configure" onOpen={() => setActivePanel("create")} />
             <HallActionCard title="Join With Code" count={null} description="Paste a room code when someone shares one manually instead of sending the full link." actionLabel="Enter Code" onOpen={() => setActivePanel("code")} />
             <HallActionCard title="Join Public Room" count={rooms.publicRooms.length} description="Browse all visible public rooms. Pending rooms can be joined, and started games can be watched." actionLabel="Browse Public Rooms" onOpen={() => setActivePanel("public")} />
             <HallActionCard title="Pending Invites" count={rooms.invites.length} description="Open the direct challenges that are currently reserved for this identity." actionLabel="Review Invites" onOpen={() => setActivePanel("invites")} />
@@ -1050,7 +1052,7 @@ export function HallPage(props) {
         </Section>
       </div>
 
-      <CreateRoomModal open={activePanel === "create"} onClose={() => setActivePanel(null)} createConfig={sanitizeConfig(createConfig)} createPublicVisible={createPublicVisible} onConfigChange={onConfigChange} onCreatePublicVisibleChange={onCreatePublicVisibleChange} onCreatePublic={onCreatePublic} onStartLocal={onStartLocal} />
+      <CreateRoomModal open={activePanel === "create"} onClose={() => setActivePanel(null)} createConfig={sanitizeConfig(createConfig)} createPublicVisible={createPublicVisible} onConfigChange={onConfigChange} onCreatePublicVisibleChange={onCreatePublicVisibleChange} onCreatePublic={onCreatePublic} onStartLocal={onStartLocal} onStartEngine={onStartEngine} />
       <JoinCodeModal open={activePanel === "code"} onClose={() => setActivePanel(null)} roomCode={roomCode} onRoomCodeChange={onRoomCodeChange} onJoinByCode={onJoinByCode} />
       <RoomBrowserModal open={activePanel === "public"} onClose={() => setActivePanel(null)} title="Public Rooms" sub="Visible waiting rooms and active games both appear here. Join an open seat, or spectate a game already in progress." rooms={rooms.publicRooms} emptyText="The public hall is quiet right now." actionLabel={(room) => room.canJoin ? "Join" : room.canSpectate ? "Spectate" : null} onAction={onOpenRoom} />
       <RoomBrowserModal open={activePanel === "invites"} onClose={() => setActivePanel(null)} title="Pending Invites" sub="These rooms were created specifically for this account or guest session." rooms={rooms.invites} emptyText="No direct challenges are waiting for you right now." actionLabel={() => "Join"} onAction={onOpenRoom} />
