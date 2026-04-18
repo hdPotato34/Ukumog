@@ -138,6 +138,7 @@ export default function App() {
   const savedEngineGameIdsRef = useRef(new Set());
   const lastRoomAlertRef = useRef("");
   const engineClientRef = useRef(null);
+  const engineSearchKeyRef = useRef("");
 
   useEffect(() => {
     sessionTokenRef.current = sessionToken;
@@ -539,6 +540,7 @@ export default function App() {
     if (engineClientRef.current) {
       void engineClientRef.current.cancel().catch(() => {});
     }
+    engineSearchKeyRef.current = "";
     return undefined;
   }, [screen]);
 
@@ -613,20 +615,27 @@ export default function App() {
     }
 
     const sessionGameId = currentSession.game.id;
+    const searchKey = `${sessionGameId}:${currentSession.game.moves.length}:${currentSession.gameState.turn}`;
+    if (engineSearchKeyRef.current === searchKey) {
+      return undefined;
+    }
+    engineSearchKeyRef.current = searchKey;
     setEngineSession((prev) => (prev?.game?.id === sessionGameId ? markEngineThinking(prev) : prev));
 
-    let cancelled = false;
     void engineClientRef.current.searchMove({
       state: currentSession.gameState,
       config: currentSession.config,
       timeBudgetMs: currentSession.config.baseSeconds === null ? 350 : 450,
       maxDepth: 5,
     }).then((analysis) => {
-      if (cancelled) return;
       setEngineSession((prev) => {
+        if (engineSearchKeyRef.current !== searchKey) {
+          return prev;
+        }
         if (!prev || prev.game.id !== sessionGameId || prev.phase !== "active" || prev.gameState.turn !== prev.engineSide) {
           return prev;
         }
+        engineSearchKeyRef.current = "";
         if (!analysis?.bestMove) {
           return setEngineRoomError(prev, "The local engine did not return a move.");
         }
@@ -640,21 +649,27 @@ export default function App() {
         }
       });
     }).catch((error) => {
-      if (cancelled) return;
       setEngineSession((prev) => (
-        prev?.game?.id === sessionGameId
-          ? setEngineRoomError(prev, error instanceof Error ? error.message : "The local engine move failed.")
+        prev?.game?.id === sessionGameId && engineSearchKeyRef.current === searchKey
+          ? (() => {
+            engineSearchKeyRef.current = "";
+            return setEngineRoomError(prev, error instanceof Error ? error.message : "The local engine move failed.");
+          })()
           : prev
       ));
     });
 
-    return () => {
-      cancelled = true;
-      if (engineClientRef.current) {
-        void engineClientRef.current.cancel().catch(() => {});
-      }
-    };
-  }, [screen, engineSession]);
+    return undefined;
+  }, [
+    screen,
+    engineSession?.game?.id,
+    engineSession?.phase,
+    engineSession?.engineStatus,
+    engineSession?.gameState?.turn,
+    engineSession?.gameState?.result,
+    engineSession?.game?.moves?.length,
+    engineSession?.engineSide,
+  ]);
 
   useEffect(() => {
     if (screen !== "room" || !onlineSession?.requests || !onlineSession?.role) {

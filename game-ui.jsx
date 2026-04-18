@@ -1115,7 +1115,7 @@ export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecor
   if (!state.result) {
     message = `${pName(state.turn)}'s turn`;
     if (session.engineStatus === "thinking") {
-      sub = session.lastError || `${engineLabel}. Thinking locally...`;
+      sub = session.lastError || `${engineLabel}. hd Thinking...`;
     } else if (canPlace) {
       sub = session.lastError || `${playerLabel}. Your move.`;
     } else {
