@@ -1109,6 +1109,7 @@ export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecor
   const pvLabel = Array.isArray(session.analysis?.pv) && session.analysis.pv.length
     ? session.analysis.pv.map((move) => move.notation || moveToNotation(move.row, move.col)).join(" ")
     : "";
+  const debug = session.engineDebug || null;
 
   let message = session.notice || "";
   let sub = session.lastError || `${playerLabel}. ${engineLabel}.`;
@@ -1119,10 +1120,10 @@ export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecor
     } else if (canPlace) {
       sub = session.lastError || `${playerLabel}. Your move.`;
     } else {
-      sub = session.lastError || `${engineLabel}. Waiting for the engine move.`;
+      sub = session.lastError || `${engineLabel}. Waiting for hd(the engine) move.`;
     }
   } else {
-    sub = session.lastError || "The engine match is finished. You can review or save the record.";
+    sub = session.lastError || "The engine match is finished. Did you beat hd? You can review or save the record.";
   }
 
   return (
@@ -1150,11 +1151,16 @@ export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecor
       footerPanels={(
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
           <div style={{ border: "1px solid #2a2018", borderRadius: 10, background: "#11161d", padding: "12px 14px", display: "grid", gap: 8 }}>
-            <div style={{ fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#7b6740" }}>Engine Status</div>
+            <div style={{ fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#7b6740" }}>hd(engine) Status</div>
             <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#dcc798", lineHeight: 1.7 }}>
               <div>State: {session.engineStatus === "thinking" ? "Thinking" : session.engineStatus === "error" ? "Error" : "Idle"}</div>
               <div>Game: {session.game?.id || "Pending"}</div>
               <div>Moves: {session.game?.moves?.length || 0}</div>
+              <div>Source: {debug?.source || "N/A"}</div>
+              <div>Stage: {debug?.stage || "N/A"}</div>
+              <div>Delay: {typeof debug?.delayMs === "number" ? `${debug.delayMs} ms` : "N/A"}</div>
+              <div>Worker: {typeof debug?.workerReady === "boolean" ? (debug.workerReady ? "Ready" : "No") : "N/A"}</div>
+              <div>Reason: {debug?.reason || "N/A"}</div>
             </div>
           </div>
           <div style={{ border: "1px solid #2a2018", borderRadius: 10, background: "#11161d", padding: "12px 14px", display: "grid", gap: 8 }}>
@@ -1165,6 +1171,8 @@ export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecor
               <div>Nodes: {session.analysis?.nodes ?? "N/A"}</div>
               <div>Time: {typeof session.analysis?.timeMs === "number" ? `${session.analysis.timeMs} ms` : "N/A"}</div>
               <div>PV: {pvLabel || "N/A"}</div>
+              <div>Key: {debug?.searchKey || "N/A"}</div>
+              <div>At: {debug?.appliedAt || debug?.scheduledAt || "N/A"}</div>
             </div>
           </div>
         </div>

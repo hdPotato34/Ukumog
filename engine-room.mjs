@@ -76,6 +76,17 @@ export function createEngineRoomSession(config, viewer, options = {}) {
     notice: `Local engine room ready. You play ${sides.playerSide === "B" ? "Black" : "White"}.`,
     lastError: "",
     analysis: null,
+    engineDebug: {
+      source: "init",
+      stage: "idle",
+      searchKey: "",
+      delayMs: 0,
+      moveCount: 0,
+      turn: state.turn,
+      scheduledAt: new Date().toISOString(),
+      appliedAt: "",
+      workerReady: false,
+    },
     game: {
       id: gameId,
       index: 1,

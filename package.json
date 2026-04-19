@@ -11,6 +11,8 @@
     "build:app": "node scripts/build.mjs",
     "desktop": "npm run build:app && electron .",
     "server": "node server.mjs",
+    "test:engine-gameplay": "node scripts/engine-gameplay-regression.mjs",
+    "test:engine-tactics": "node scripts/engine-tactics-regression.mjs",
     "dist": "npm run build:app && electron-builder --win nsis"
   },
   "dependencies": {

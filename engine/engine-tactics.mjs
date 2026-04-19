@@ -2,6 +2,7 @@ import { opp } from "../game-core.mjs";
 import {
   applyEngineMove,
   countNearbyStones,
+  createPerspectiveState,
   localMoveCandidates,
   moveKey,
   listLegalMoves,
@@ -80,20 +81,45 @@ export function listImmediateWinningMoves(state, config) {
   return winningMoves;
 }
 
+function mergeUniqueSummaries(entries) {
+  const seen = new Set();
+  const merged = [];
+  for (const entry of entries) {
+    if (!entry || seen.has(entry.key)) {
+      continue;
+    }
+    seen.add(entry.key);
+    merged.push(entry);
+  }
+  return merged;
+}
+
 export function rankCandidateMoves(state, config, {
   candidateLimit = 16,
   preferredRadius = 2,
   fallbackRadius = 3,
   minCount = 8,
 } = {}) {
+  const cleanConfig = normalizeEngineConfig(config);
   const seedMoves = localMoveCandidates(state, config, {
     preferredRadius,
     fallbackRadius,
     minCount,
   });
-  const summaries = seedMoves
+  let summaries = seedMoves
     .map((move) => classifyMove(state, config, move))
     .filter(Boolean);
+
+  const opponentState = createPerspectiveState(state, opp(state.turn));
+  const currentOpponentImmediateWins = listImmediateWinningMoves(opponentState, cleanConfig).length;
+  const safeSummaryCount = summaries.filter((entry) => !entry.isImmediateLoss).length;
+
+  if (currentOpponentImmediateWins > 0 || safeSummaryCount < Math.min(candidateLimit, 3)) {
+    const emergencySummaries = listLegalMoves(state, cleanConfig)
+      .map((move) => classifyMove(state, cleanConfig, move))
+      .filter(Boolean);
+    summaries = mergeUniqueSummaries([...summaries, ...emergencySummaries]);
+  }
 
   if (!summaries.length) {
     return [];
@@ -111,10 +137,24 @@ export function rankCandidateMoves(state, config, {
 
   pool.sort((left, right) => right.tacticalScore - left.tacticalScore);
 
-  const threatCheckedCount = Math.min(pool.length, Math.max(candidateLimit * 2, 8));
+  const threatCheckedCount = currentOpponentImmediateWins > 0
+    ? pool.length
+    : Math.min(pool.length, Math.max(candidateLimit * 2, 8));
   for (let index = 0; index < threatCheckedCount; index += 1) {
-    pool[index].opponentImmediateWins = countOpponentImmediateWins(pool[index].nextState, config);
-    pool[index].tacticalScore -= pool[index].opponentImmediateWins * 4_000;
+    pool[index].opponentImmediateWins = countOpponentImmediateWins(pool[index].nextState, cleanConfig);
+    pool[index].tacticalScore -= pool[index].opponentImmediateWins * (currentOpponentImmediateWins > 0 ? 20_000 : 4_000);
+  }
+
+  if (currentOpponentImmediateWins > 0) {
+    const minOpponentImmediateWins = Math.min(...pool.map((entry) => entry.opponentImmediateWins));
+    const emergencyPool = pool.filter((entry) => entry.opponentImmediateWins === minOpponentImmediateWins);
+    emergencyPool.sort((left, right) => {
+      if (left.isImmediateLoss !== right.isImmediateLoss) {
+        return left.isImmediateLoss ? 1 : -1;
+      }
+      return right.tacticalScore - left.tacticalScore;
+    });
+    return emergencyPool.slice(0, candidateLimit);
   }
 
   pool.sort((left, right) => {

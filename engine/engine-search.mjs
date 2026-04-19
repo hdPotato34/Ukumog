@@ -1,7 +1,7 @@
 import { opp } from "../game-core.mjs";
 import { DEFAULT_ENGINE_PACK, evaluateState, isMateScore, normalizeEnginePack, scoreToMatePly, terminalScoreForWinner } from "./engine-eval.mjs";
-import { hashState, listLegalMoves, normalizeEngineConfig } from "./rules-adapter.mjs";
-import { rankCandidateMoves } from "./engine-tactics.mjs";
+import { createPerspectiveState, hashState, listLegalMoves, normalizeEngineConfig } from "./rules-adapter.mjs";
+import { listImmediateWinningMoves, rankCandidateMoves } from "./engine-tactics.mjs";
 
 class SearchAbortError extends Error {
   constructor(message = "Search aborted.") {
@@ -58,6 +58,102 @@ function lookupEntry(context, key, depth) {
   return entry;
 }
 
+function rankedCandidates(state, config, context, candidateLimit = context.pack.search.candidateLimit) {
+  return rankCandidateMoves(state, config, {
+    candidateLimit,
+    preferredRadius: context.pack.search.preferredRadius,
+    fallbackRadius: context.pack.search.fallbackRadius,
+    minCount: context.pack.search.minCandidateCount,
+  });
+}
+
+function tacticalCandidates(state, config, context) {
+  const currentWinningMoves = listImmediateWinningMoves(state, config);
+  const opponentState = createPerspectiveState(state, opp(state.turn));
+  const opponentWinningMoves = listImmediateWinningMoves(opponentState, config);
+
+  if (!currentWinningMoves.length && !opponentWinningMoves.length) {
+    return [];
+  }
+
+  const candidateLimit = Math.max(
+    context.pack.search.candidateLimit,
+    context.pack.search.tacticalCandidateLimit || context.pack.search.candidateLimit,
+  );
+  const candidates = rankedCandidates(state, config, context, candidateLimit);
+  if (!candidates.length) {
+    return [];
+  }
+
+  if (currentWinningMoves.length) {
+    return candidates.filter((candidate) => candidate.isImmediateWin);
+  }
+
+  const minOpponentImmediateWins = Math.min(...candidates.map((candidate) => candidate.opponentImmediateWins ?? 0));
+  return candidates.filter((candidate) => (candidate.opponentImmediateWins ?? 0) === minOpponentImmediateWins);
+}
+
+function quiescenceNegamax(state, config, alpha, beta, player, ply, remainingDepth, context) {
+  ensureSearchState(context);
+  context.nodeCount += 1;
+
+  if (state.result) {
+    return {
+      score: terminalScoreForWinner(state.result.winner, player, context.pack, ply),
+      pv: [],
+    };
+  }
+
+  if (remainingDepth <= 0) {
+    return {
+      score: evaluateState(state, config, context.pack, { perspective: player }),
+      pv: [],
+    };
+  }
+
+  const candidates = tacticalCandidates(state, config, context);
+  if (!candidates.length) {
+    return {
+      score: evaluateState(state, config, context.pack, { perspective: player }),
+      pv: [],
+    };
+  }
+
+  let bestScore = -Infinity;
+  let bestPv = [];
+  let localAlpha = alpha;
+
+  for (const candidate of candidates) {
+    ensureSearchState(context);
+    let nextScore = 0;
+    let childPv = [];
+
+    if (candidate.nextState.result) {
+      nextScore = terminalScoreForWinner(candidate.nextState.result.winner, player, context.pack, ply + 1);
+    } else {
+      const child = quiescenceNegamax(candidate.nextState, config, -beta, -localAlpha, opp(player), ply + 1, remainingDepth - 1, context);
+      nextScore = -child.score;
+      childPv = child.pv;
+    }
+
+    if (nextScore > bestScore) {
+      bestScore = nextScore;
+      bestPv = [candidate.move, ...childPv];
+    }
+    if (nextScore > localAlpha) {
+      localAlpha = nextScore;
+    }
+    if (localAlpha >= beta) {
+      break;
+    }
+  }
+
+  return {
+    score: bestScore,
+    pv: bestPv,
+  };
+}
+
 function negamax(state, config, depth, alpha, beta, player, ply, context) {
   ensureSearchState(context);
   context.nodeCount += 1;
@@ -70,10 +166,16 @@ function negamax(state, config, depth, alpha, beta, player, ply, context) {
   }
 
   if (depth <= 0) {
-    return {
-      score: evaluateState(state, config, context.pack, { perspective: player }),
-      pv: [],
-    };
+    return quiescenceNegamax(
+      state,
+      config,
+      alpha,
+      beta,
+      player,
+      ply,
+      Math.max(0, context.pack.search.quiescenceDepth || 0),
+      context,
+    );
   }
 
   const key = `${hashState(state)}|${player}|${depth}`;
@@ -85,12 +187,7 @@ function negamax(state, config, depth, alpha, beta, player, ply, context) {
     };
   }
 
-  const candidates = rankCandidateMoves(state, config, {
-    candidateLimit: context.pack.search.candidateLimit,
-    preferredRadius: context.pack.search.preferredRadius,
-    fallbackRadius: context.pack.search.fallbackRadius,
-    minCount: context.pack.search.minCandidateCount,
-  });
+  const candidates = rankedCandidates(state, config, context);
 
   if (!candidates.length) {
     return { score: 0, pv: [] };
@@ -135,7 +232,16 @@ function negamax(state, config, depth, alpha, beta, player, ply, context) {
   };
 }
 
-function firstLegalFallback(state, config) {
+function firstLegalFallback(state, config, pack = DEFAULT_ENGINE_PACK) {
+  const ranked = rankCandidateMoves(state, config, {
+    candidateLimit: Math.max(1, normalizeEnginePack(pack).search.candidateLimit),
+    preferredRadius: normalizeEnginePack(pack).search.preferredRadius,
+    fallbackRadius: normalizeEnginePack(pack).search.fallbackRadius,
+    minCount: normalizeEnginePack(pack).search.minCandidateCount,
+  });
+  if (ranked.length) {
+    return ranked[0].move;
+  }
   const legalMoves = listLegalMoves(state, config);
   return legalMoves.length ? legalMoves[0] : null;
 }
@@ -173,7 +279,7 @@ export function analyzePosition({
     for (let depth = 1; depth <= depthLimit; depth += 1) {
       const searched = negamax(state, cleanConfig, depth, -Infinity, Infinity, state.turn, 0, context);
       bestResult = buildMoveSummary(
-        searched.pv[0] || firstLegalFallback(state, cleanConfig),
+        searched.pv[0] || firstLegalFallback(state, cleanConfig, pack),
         searched.score,
         searched.pv,
         depth,
@@ -196,7 +302,7 @@ export function analyzePosition({
     return bestResult;
   }
 
-  const fallbackMove = firstLegalFallback(state, cleanConfig);
+  const fallbackMove = firstLegalFallback(state, cleanConfig, pack);
   const fallbackScore = evaluateState(state, cleanConfig, pack, { perspective: state.turn });
   return buildMoveSummary(
     fallbackMove,

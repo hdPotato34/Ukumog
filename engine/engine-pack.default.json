@@ -5,6 +5,8 @@
     "defaultMoveTimeMs": 350,
     "maxDepth": 5,
     "candidateLimit": 16,
+    "tacticalCandidateLimit": 10,
+    "quiescenceDepth": 2,
     "preferredRadius": 2,
     "fallbackRadius": 3,
     "minCandidateCount": 8
