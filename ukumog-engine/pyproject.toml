@@ -1,0 +1,9 @@
+[project]
+name = "ukumog-engine"
+version = "0.1.0"
+description = "Search-first engine for an arithmetic-pattern placement game."
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

@@ -43,12 +43,33 @@ const SELF_DESTRUCT_SEQUENCE = [
   { row: 9, col: 10, actor: "player" },
 ];
 
+const BROKEN_FIVE_THREAT_SEQUENCE = [
+  { row: 4, col: 5, actor: "engine" },
+  { row: 2, col: 5, actor: "player" },
+  { row: 4, col: 6, actor: "engine" },
+  { row: 9, col: 1, actor: "player" },
+  { row: 5, col: 4, actor: "engine" },
+  { row: 7, col: 4, actor: "player" },
+  { row: 5, col: 5, actor: "engine" },
+  { row: 7, col: 5, actor: "player" },
+  { row: 5, col: 6, actor: "engine" },
+  { row: 8, col: 5, actor: "player" },
+  { row: 6, col: 4, actor: "engine" },
+  { row: 7, col: 7, actor: "player" },
+  { row: 6, col: 5, actor: "engine" },
+  { row: 7, col: 8, actor: "player" },
+];
+
 function buildForcedDefenseSession() {
   return buildSessionFromMoves(FORCED_DEFENSE_SEQUENCE);
 }
 
 function buildSelfDestructSession() {
   return buildSessionFromMoves(SELF_DESTRUCT_SEQUENCE);
+}
+
+function buildBrokenFiveThreatSession() {
+  return buildSessionFromMoves(BROKEN_FIVE_THREAT_SEQUENCE);
 }
 
 function buildSessionFromMoves(sequence) {
@@ -173,11 +194,54 @@ function runSelfDestructRegression() {
   };
 }
 
+function runBrokenFiveThreatRegression() {
+  const session = buildBrokenFiveThreatSession();
+
+  assert.equal(session.phase, "active", "Broken-five-threat position should still be active.");
+  assert.equal(session.gameState.turn, session.engineSide, "Engine should be the side to move in broken-five-threat position.");
+
+  const winningRepliesBefore = opponentImmediateWins(session.gameState, session.config);
+  assert.deepEqual(
+    winningRepliesBefore,
+    [{ row: 7, col: 6 }],
+    "Broken-five-threat position should expose the center gap as the unique immediate winning move.",
+  );
+
+  const analysis = analyzeWithGameplayPack(session.gameState, session.config);
+  assert.deepEqual(
+    analysis.bestMove,
+    { row: 7, col: 6 },
+    "Engine should block the center gap against the broken-five threat.",
+  );
+
+  const chosen = classifyMove(session.gameState, session.config, analysis.bestMove);
+  assert.ok(chosen, "Chosen move should classify correctly in broken-five-threat position.");
+  const winningRepliesAfter = opponentImmediateWins(chosen.nextState, session.config);
+  assert.equal(winningRepliesAfter.length, 0, "Blocking move should remove the broken-five threat.");
+
+  const abortController = new AbortController();
+  abortController.abort();
+  const fallbackAnalysis = analyzeWithGameplayPack(session.gameState, session.config, abortController.signal);
+  assert.deepEqual(
+    fallbackAnalysis.bestMove,
+    { row: 7, col: 6 },
+    "Fallback search should also block the center gap against the broken-five threat.",
+  );
+
+  return {
+    winningRepliesBefore,
+    chosenMove: analysis.bestMove,
+    fallbackChosenMove: fallbackAnalysis.bestMove,
+  };
+}
+
 const forcedDefense = runForcedDefenseRegression();
 const selfDestruct = runSelfDestructRegression();
+const brokenFiveThreat = runBrokenFiveThreatRegression();
 
 console.log(JSON.stringify({
   forcedDefense,
   selfDestruct,
+  brokenFiveThreat,
 }, null, 2));
 console.log("Engine tactics regression passed.");
