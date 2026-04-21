@@ -6,7 +6,7 @@ import { getOpeningBookMove } from "./opening-book.mjs";
 export const GAMEPLAY_ENGINE_PACK = {
   search: {
     defaultMoveTimeMs: 60,
-    maxDepth: 2,
+    maxDepth: 4,
     candidateLimit: 4,
     preferredRadius: 1,
     fallbackRadius: 2,
@@ -16,7 +16,7 @@ export const GAMEPLAY_ENGINE_PACK = {
 
 export const GAMEPLAY_UNTIMED_SEARCH_BUDGET_MS = 45;
 export const GAMEPLAY_TIMED_SEARCH_BUDGET_MS = 60;
-export const GAMEPLAY_SEARCH_MAX_DEPTH = 2;
+export const GAMEPLAY_SEARCH_MAX_DEPTH = 4;
 
 export const GAMEPLAY_FALLBACK_ENGINE_PACK = {
   search: {
@@ -93,9 +93,11 @@ export class EngineGameplayRunner {
   constructor({
     enableOpeningWatchdog = false,
     enableWorkerFallback = true,
+    clientFactory = null,
   } = {}) {
     this.enableOpeningWatchdog = enableOpeningWatchdog;
     this.enableWorkerFallback = enableWorkerFallback;
+    this.clientFactory = clientFactory || (() => new LocalEngineClient());
     this.client = null;
     this.searchKey = "";
     this.timerId = null;
@@ -104,7 +106,7 @@ export class EngineGameplayRunner {
 
   init() {
     if (!this.client) {
-      this.client = new LocalEngineClient();
+      this.client = this.clientFactory();
       void this.client.init({ enginePack: GAMEPLAY_ENGINE_PACK }).catch(() => {});
     }
   }
@@ -180,7 +182,7 @@ export class EngineGameplayRunner {
       return;
     }
 
-    this.scheduleWorkerSearch({
+    this.scheduleSearch({
       session,
       sessionGameId,
       searchKey,
@@ -562,14 +564,16 @@ export class EngineGameplayRunner {
     });
   }
 
-  scheduleWorkerSearch({
+  scheduleSearch({
     session,
     sessionGameId,
     searchKey,
     sessionRef,
     setSession,
   }) {
-    const handleWorkerFailure = (reason) => {
+    const searchSource = this.client?.sourceName || "engine-search";
+    const waitingStage = searchSource === "remote-search" ? "waiting-server" : "waiting-worker";
+    const handleSearchFailure = (reason) => {
       if (!this.enableWorkerFallback) {
         const liveSession = sessionRef.current;
         if (
@@ -580,9 +584,9 @@ export class EngineGameplayRunner {
           this.searchKey = "";
           this.markError(setSession, liveSession, {
             searchKey,
-            source: "worker-search",
-            message: typeof reason === "string" && reason ? reason : "Worker search failed.",
-            reason: typeof reason === "string" && reason ? reason : "worker-search-failed",
+            source: searchSource,
+            message: typeof reason === "string" && reason ? reason : "Engine search failed.",
+            reason: typeof reason === "string" && reason ? reason : "engine-search-failed",
           });
         }
         return;
@@ -592,10 +596,11 @@ export class EngineGameplayRunner {
         prev?.game?.id === sessionGameId
           ? withEngineDebug(prev, {
             searchKey,
-            source: "worker-search",
+            source: searchSource,
             stage: "fallback",
+            transportReady: false,
             workerReady: false,
-            reason: typeof reason === "string" && reason ? reason : "worker-search-failed",
+            reason: typeof reason === "string" && reason ? reason : "engine-search-failed",
           })
           : prev
       ));
@@ -603,7 +608,7 @@ export class EngineGameplayRunner {
         session,
         sessionGameId,
         searchKey,
-        reason: typeof reason === "string" && reason ? reason : "worker-search-failed",
+        reason: typeof reason === "string" && reason ? reason : "engine-search-failed",
         sessionRef,
         setSession,
       });
@@ -613,14 +618,14 @@ export class EngineGameplayRunner {
       session,
       sessionGameId,
       searchKey,
-      source: "worker-search",
+      source: searchSource,
       delayMs: 10,
       setSession,
       execute: () => {
         this.init();
         const engineClient = this.client;
         if (!engineClient) {
-          handleWorkerFailure("worker-unavailable");
+          handleSearchFailure("engine-unavailable");
           return;
         }
 
@@ -628,8 +633,9 @@ export class EngineGameplayRunner {
           prev?.game?.id === sessionGameId
             ? withEngineDebug(prev, {
               searchKey,
-              source: "worker-search",
-              stage: "waiting-worker",
+              source: searchSource,
+              stage: waitingStage,
+              transportReady: true,
               workerReady: true,
             })
             : prev
@@ -655,9 +661,9 @@ export class EngineGameplayRunner {
 
           this.searchKey = "";
           if (!analysis?.bestMove) {
-            setSession(withEngineDebug(setEngineRoomError(liveSession, "The local engine did not return a move."), {
+            setSession(withEngineDebug(setEngineRoomError(liveSession, "The engine service did not return a move."), {
               searchKey,
-              source: "worker-search",
+              source: searchSource,
               stage: "error",
               appliedAt: nowIso(),
             }));
@@ -670,20 +676,20 @@ export class EngineGameplayRunner {
               analysis,
             }), {
               searchKey,
-              source: "worker-search",
+              source: searchSource,
               stage: "applied",
               appliedAt: nowIso(),
             }));
           } catch (error) {
             setSession(withEngineDebug(setEngineRoomError(liveSession, error instanceof Error ? error.message : "The engine returned an illegal move."), {
               searchKey,
-              source: "worker-search",
+              source: searchSource,
               stage: "error",
               appliedAt: nowIso(),
             }));
           }
         }).catch((error) => {
-          handleWorkerFailure(error instanceof Error ? error.message : "worker-search-failed");
+          handleSearchFailure(error instanceof Error ? error.message : "engine-search-failed");
         });
       },
     });

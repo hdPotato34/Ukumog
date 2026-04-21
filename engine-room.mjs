@@ -85,6 +85,7 @@ export function createEngineRoomSession(config, viewer, options = {}) {
       turn: state.turn,
       scheduledAt: new Date().toISOString(),
       appliedAt: "",
+      transportReady: false,
       workerReady: false,
     },
     game: {

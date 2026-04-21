@@ -40,6 +40,7 @@ import {
   deleteArchivedRecord,
 } from "./game-record.mjs";
 import { applyEngineRoomMove, canPlayerMoveInEngineRoom, createEngineRoomSession } from "./engine-room.mjs";
+import { RemoteEngineClient } from "./engine/engine-client.mjs";
 import { EngineGameplayRunner, withEngineDebug } from "./engine/engine-gameplay-runner.mjs";
 
 const LOBBY_POLL_MS = 4000;
@@ -170,7 +171,10 @@ export default function App() {
     if (!engineRunnerRef.current) {
       engineRunnerRef.current = new EngineGameplayRunner({
         enableOpeningWatchdog: true,
-        enableWorkerFallback: true,
+        enableWorkerFallback: false,
+        clientFactory: () => new RemoteEngineClient({
+          getSessionToken: () => sessionTokenRef.current,
+        }),
       });
       engineRunnerRef.current.init();
     }

@@ -44,6 +44,18 @@ class EngineController:
         return None if self.time_seconds <= 0 else int(self.time_seconds * 1000)
 
 
+@dataclass(frozen=True, slots=True)
+class EngineSpec:
+    name: str
+    model_path: Path | None
+    ml_mode: str
+    depth: int
+    time_seconds: float
+    learned_weight: float
+    temperature: float
+    symmetry_ensemble: bool
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Play Ukumog against the current search engine.")
     parser.add_argument(
@@ -78,15 +90,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--ml-mode",
-        choices=("full", "policy-only", "root-policy", "root-hybrid"),
-        default="root-policy",
-        help="How the learned model is used inside search. Default: root-policy.",
+        choices=("quiet-value", "full", "policy-only", "root-policy", "root-hybrid"),
+        default="quiet-value",
+        help="How the learned model is used inside search. Default: quiet-value.",
     )
     parser.add_argument(
         "--learned-weight",
         type=float,
-        default=0.35,
-        help="How strongly to blend the learned evaluator into static evaluation. Default: 0.35.",
+        default=0.25,
+        help="How strongly to blend the learned evaluator into static evaluation. Default: 0.25.",
     )
     parser.add_argument(
         "--symmetry-ensemble",
@@ -113,13 +125,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--black-ml-mode",
-        choices=("full", "policy-only", "root-policy", "root-hybrid"),
+        choices=("quiet-value", "full", "policy-only", "root-policy", "root-hybrid"),
         default=None,
         help="Black engine ML integration mode override.",
     )
     parser.add_argument(
         "--white-ml-mode",
-        choices=("full", "policy-only", "root-policy", "root-hybrid"),
+        choices=("quiet-value", "full", "policy-only", "root-policy", "root-hybrid"),
         default=None,
         help="White engine ML integration mode override.",
     )
@@ -138,6 +150,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=121,
         help="Stop engine-vs-engine games after this many plies if still nonterminal. Default: 121.",
+    )
+    parser.add_argument(
+        "--games",
+        type=int,
+        default=1,
+        help="Number of engine-vs-engine games to run. Default: 1.",
+    )
+    parser.add_argument(
+        "--shuffle-colors",
+        action="store_true",
+        help="Randomly swap which configured engine gets Black each engine-vs-engine game.",
     )
     parser.add_argument(
         "--temperature",
@@ -174,6 +197,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=20260419,
         help="Random seed used for temperature-based move sampling. Default: 20260419.",
+    )
+    parser.add_argument(
+        "--seed-step",
+        type=int,
+        default=1,
+        help="Increment added to the base seed between batch games. Default: 1.",
     )
     parser.add_argument(
         "--search-summary",
@@ -246,6 +275,7 @@ def _build_engine_controller(
     learned_weight: float,
     temperature: float,
     symmetry_ensemble: bool,
+    label: str | None = None,
 ) -> EngineController:
     learned_evaluator = (
         TorchPolicyValueEvaluator.from_checkpoint(
@@ -256,12 +286,17 @@ def _build_engine_controller(
         if model_path is not None
         else None
     )
-    if model_path is None:
-        label = f"{color.name.title()} PureSearch"
-    else:
-        label = f"{color.name.title()} ML"
+    if label is None:
+        if model_path is None:
+            label = f"{color.name.title()} PureSearch"
+        else:
+            label = f"{color.name.title()} ML"
 
-    if ml_mode == "full":
+    if ml_mode == "quiet-value":
+        learned_policy_max_ply = -1
+        learned_value_max_ply = None
+        effective_weight = learned_weight
+    elif ml_mode == "full":
         learned_policy_max_ply = None
         learned_value_max_ply = None
         effective_weight = learned_weight
@@ -299,7 +334,7 @@ def _build_engine_controller(
 def _engine_settings_for_color(
     args: argparse.Namespace,
     color: Color,
-) -> tuple[Path | None, int, float, float, float, bool]:
+) -> tuple[Path | None, str, int, float, float, float, bool]:
     prefix = "black" if color is Color.BLACK else "white"
     model_path = getattr(args, f"{prefix}_model") or args.model
     ml_mode = getattr(args, f"{prefix}_ml_mode") or args.ml_mode
@@ -317,6 +352,27 @@ def _engine_settings_for_color(
     return model_path, ml_mode, depth, time_seconds, learned_weight, temperature, symmetry_ensemble
 
 
+def _engine_spec_for_color(
+    args: argparse.Namespace,
+    color: Color,
+    name: str,
+) -> EngineSpec:
+    model_path, ml_mode, depth, time_seconds, learned_weight, temperature, symmetry_ensemble = _engine_settings_for_color(
+        args,
+        color,
+    )
+    return EngineSpec(
+        name=name,
+        model_path=model_path,
+        ml_mode=ml_mode,
+        depth=depth,
+        time_seconds=time_seconds,
+        learned_weight=learned_weight,
+        temperature=temperature,
+        symmetry_ensemble=symmetry_ensemble,
+    )
+
+
 def _describe_engine(controller: EngineController) -> str:
     time_text = "unlimited" if controller.time_ms is None else f"{controller.time_seconds:g}s"
     if controller.model_path is None:
@@ -328,6 +384,20 @@ def _describe_engine(controller: EngineController) -> str:
         f"ml_mode={controller.ml_mode}, learned_weight={controller.learned_weight:g}, "
         f"temperature={controller.temperature:g}, "
         f"symmetry_ensemble={controller.symmetry_ensemble}, {model_text}"
+    )
+
+
+def _describe_spec(spec: EngineSpec) -> str:
+    time_text = "unlimited" if spec.time_seconds <= 0 else f"{spec.time_seconds:g}s"
+    if spec.model_path is None:
+        model_text = "pure search"
+    else:
+        model_text = f"model={spec.model_path}"
+    return (
+        f"{spec.name}: depth={spec.depth}, time={time_text}, "
+        f"ml_mode={spec.ml_mode}, learned_weight={spec.learned_weight:g}, "
+        f"temperature={spec.temperature:g}, "
+        f"symmetry_ensemble={spec.symmetry_ensemble}, {model_text}"
     )
 
 
@@ -476,12 +546,297 @@ def _choose_engine_move(
     return move, result, sampled
 
 
+def _controller_from_spec(color: Color, spec: EngineSpec) -> EngineController:
+    return _build_engine_controller(
+        color=color,
+        model_path=spec.model_path,
+        ml_mode=spec.ml_mode,
+        depth=spec.depth,
+        time_seconds=spec.time_seconds,
+        learned_weight=spec.learned_weight,
+        temperature=spec.temperature,
+        symmetry_ensemble=spec.symmetry_ensemble,
+        label=f"{spec.name} ({color.name.title()})",
+    )
+
+
+def _play_engine_vs_engine_game(
+    black_spec: EngineSpec,
+    white_spec: EngineSpec,
+    args: argparse.Namespace,
+    rng: random.Random,
+    *,
+    game_index: int = 0,
+    verbose: bool = True,
+) -> dict[str, object]:
+    position = Position.initial()
+    controllers = {
+        Color.BLACK: _controller_from_spec(Color.BLACK, black_spec),
+        Color.WHITE: _controller_from_spec(Color.WHITE, white_spec),
+    }
+    participant_by_color = {
+        Color.BLACK: black_spec.name,
+        Color.WHITE: white_spec.name,
+    }
+    plies_played = 0
+
+    if verbose:
+        print("Engine-vs-engine mode")
+        print(_describe_engine(controllers[Color.BLACK]))
+        print(_describe_engine(controllers[Color.WHITE]))
+        print(
+            f"Opening sampling: first {args.temperature_plies} plies, "
+            f"top_k={args.sample_top_k}, seed={args.seed}."
+        )
+
+    while True:
+        if verbose:
+            print()
+            print(render_board(position))
+        side_to_move = position.side_to_move
+
+        if position.empty_count == 0:
+            if verbose:
+                print("Board is full. Draw-by-exhaustion handling is not defined, so stopping here.")
+                if args.time_trace:
+                    _print_match_time_totals(controllers)
+            return {
+                "winner": None,
+                "reason": "board_full",
+                "plies_played": plies_played,
+                "controllers": controllers,
+            }
+
+        controller = controllers[side_to_move]
+        if verbose:
+            print(f"{controller.label} thinking...")
+        move, search_result, sampled = _choose_engine_move(
+            position,
+            controller,
+            plies_played,
+            args.temperature_plies,
+            args.sample_top_k,
+            rng,
+        )
+        if move is None:
+            if verbose:
+                print(f"{controller.label} found no legal move. Stopping.")
+                if args.time_trace:
+                    _print_match_time_totals(controllers)
+            return {
+                "winner": None,
+                "reason": "no_move",
+                "plies_played": plies_played,
+                "controllers": controllers,
+            }
+
+        next_position, move_result = play_move(position, move)
+        row, col = index_to_coord(move)
+        _record_search_totals(controller, search_result)
+        if verbose:
+            print(
+                f"{controller.label} chooses ({row}, {col}) "
+                f"[score={search_result.score}, depth={search_result.depth}, nodes={search_result.stats.nodes}]"
+            )
+            if args.time_trace:
+                print(_format_time_trace(controller, search_result))
+            if args.search_summary:
+                print(search_result.format_summary())
+            if sampled:
+                best_row, best_col = index_to_coord(search_result.best_move)
+                print(
+                    f"{controller.label} sampled an opening move from its root shortlist; "
+                    f"strict best was ({best_row}, {best_col})."
+                )
+            if search_result.stats.aborted:
+                if search_result.stats.time_limit_abort:
+                    print(
+                        f"{controller.label} hit the move time limit and used the best move "
+                        "from the last completed iteration."
+                    )
+                elif search_result.stats.node_limit_abort:
+                    print(
+                        f"{controller.label} hit its node limit and used the best move "
+                        "from the last completed iteration."
+                    )
+        if args.stats_jsonl is not None:
+            _append_stats_record(
+                args.stats_jsonl,
+                {
+                    "event": "search",
+                    "game": game_index,
+                    "engine": controller.label,
+                    "participant": participant_by_color[side_to_move],
+                    "side_to_move": side_to_move.name,
+                    "ply": plies_played,
+                    "sampled": sampled,
+                    "selected_move": move,
+                    "search": search_result.to_dict(),
+                },
+            )
+        if verbose:
+            print(announce_result(controller.label, side_to_move, move, move_result))
+
+        position = next_position
+        plies_played += 1
+
+        if plies_played >= args.max_moves and move_result is MoveResult.NONTERMINAL:
+            if verbose:
+                print()
+                print(render_board(position))
+                if args.time_trace:
+                    _print_match_time_totals(controllers)
+                print(f"Reached the engine-vs-engine move cap ({args.max_moves}) without a terminal result.")
+            if args.stats_jsonl is not None:
+                _append_stats_record(
+                    args.stats_jsonl,
+                    {
+                        "event": "match_end",
+                        "game": game_index,
+                        "reason": "move_cap",
+                        "plies_played": plies_played,
+                    },
+                )
+            return {
+                "winner": None,
+                "reason": "move_cap",
+                "plies_played": plies_played,
+                "controllers": controllers,
+            }
+
+        if move_result is MoveResult.WIN:
+            winner = participant_by_color[side_to_move]
+            if verbose:
+                print()
+                print(render_board(position))
+                if args.time_trace:
+                    _print_match_time_totals(controllers)
+                print(f"{winner} wins.")
+            if args.stats_jsonl is not None:
+                _append_stats_record(
+                    args.stats_jsonl,
+                    {
+                        "event": "match_end",
+                        "game": game_index,
+                        "reason": "win",
+                        "winner": winner,
+                        "plies_played": plies_played,
+                    },
+                )
+            return {
+                "winner": winner,
+                "reason": "win",
+                "plies_played": plies_played,
+                "controllers": controllers,
+            }
+
+        if move_result is MoveResult.LOSS:
+            winner = participant_by_color[side_to_move.opponent]
+            if verbose:
+                print()
+                print(render_board(position))
+                if args.time_trace:
+                    _print_match_time_totals(controllers)
+                print(f"{winner} wins.")
+            if args.stats_jsonl is not None:
+                _append_stats_record(
+                    args.stats_jsonl,
+                    {
+                        "event": "match_end",
+                        "game": game_index,
+                        "reason": "loss",
+                        "winner": winner,
+                        "plies_played": plies_played,
+                    },
+                )
+            return {
+                "winner": winner,
+                "reason": "loss",
+                "plies_played": plies_played,
+                "controllers": controllers,
+            }
+
+
+def _run_engine_batch(args: argparse.Namespace, engine_a: EngineSpec, engine_b: EngineSpec) -> int:
+    print("Engine-vs-engine batch mode")
+    print(_describe_spec(engine_a))
+    print(_describe_spec(engine_b))
+    print(
+        f"Games={args.games}, shuffle_colors={args.shuffle_colors}, "
+        f"base_seed={args.seed}, seed_step={args.seed_step}."
+    )
+
+    summary = {
+        engine_a.name: {"wins": 0, "losses": 0, "draws": 0, "black_games": 0, "white_games": 0},
+        engine_b.name: {"wins": 0, "losses": 0, "draws": 0, "black_games": 0, "white_games": 0},
+    }
+
+    for game_index in range(args.games):
+        game_seed = args.seed + (game_index * args.seed_step)
+        game_rng = random.Random(game_seed)
+        swap_colors = args.shuffle_colors and bool(game_rng.randrange(2))
+        black_spec, white_spec = (engine_b, engine_a) if swap_colors else (engine_a, engine_b)
+        summary[black_spec.name]["black_games"] += 1
+        summary[white_spec.name]["white_games"] += 1
+
+        result = _play_engine_vs_engine_game(
+            black_spec,
+            white_spec,
+            args,
+            game_rng,
+            game_index=game_index,
+            verbose=False,
+        )
+        winner = result["winner"]
+        if winner is None:
+            summary[engine_a.name]["draws"] += 1
+            summary[engine_b.name]["draws"] += 1
+            outcome_text = result["reason"]
+        else:
+            loser = engine_b.name if winner == engine_a.name else engine_a.name
+            summary[winner]["wins"] += 1
+            summary[loser]["losses"] += 1
+            outcome_text = f"{winner} wins"
+
+        print(
+            f"game {game_index + 1}/{args.games}: seed={game_seed} "
+            f"black={black_spec.name} white={white_spec.name} "
+            f"result={outcome_text} plies={result['plies_played']}"
+        )
+
+    print("Batch summary:")
+    for spec in (engine_a, engine_b):
+        stats = summary[spec.name]
+        win_rate = stats["wins"] / max(1, args.games)
+        print(
+            f"{spec.name}: wins={stats['wins']} losses={stats['losses']} draws={stats['draws']} "
+            f"win_rate={win_rate:.1%} black_games={stats['black_games']} white_games={stats['white_games']}"
+        )
+    return 0
+
+
 def main() -> int:
     args = parse_args()
+    print("Ukumog CLI")
+    if args.mode == "engine-vs-engine":
+        engine_a = _engine_spec_for_color(args, Color.BLACK, "Engine A")
+        engine_b = _engine_spec_for_color(args, Color.WHITE, "Engine B")
+        if args.games > 1:
+            return _run_engine_batch(args, engine_a, engine_b)
+
+        _play_engine_vs_engine_game(
+            engine_a,
+            engine_b,
+            args,
+            random.Random(args.seed),
+            game_index=0,
+            verbose=True,
+        )
+        return 0
+
     position = Position.initial()
     rng = random.Random(args.seed)
 
-    print("Ukumog CLI")
     if args.mode == "human-vs-engine":
         human_color = Color.BLACK if args.human == "black" else Color.WHITE
         engine_color = human_color.opponent
@@ -509,30 +864,7 @@ def main() -> int:
         print("Type 'q' to quit.")
         controllers: dict[Color, EngineController] = {engine_color: engine_controller}
     else:
-        controllers = {}
-        for color in (Color.BLACK, Color.WHITE):
-            model_path, ml_mode, depth, time_seconds, learned_weight, temperature, symmetry_ensemble = _engine_settings_for_color(
-                args,
-                color,
-            )
-            controllers[color] = _build_engine_controller(
-                color,
-                model_path,
-                ml_mode,
-                depth,
-                time_seconds,
-                learned_weight,
-                temperature,
-                symmetry_ensemble,
-            )
-        human_color = None
-        print("Engine-vs-engine mode")
-        print(_describe_engine(controllers[Color.BLACK]))
-        print(_describe_engine(controllers[Color.WHITE]))
-        print(
-            f"Opening sampling: first {args.temperature_plies} plies, "
-            f"top_k={args.sample_top_k}, seed={args.seed}."
-        )
+        raise ValueError(f"unsupported mode: {args.mode}")
 
     plies_played = 0
     while True:

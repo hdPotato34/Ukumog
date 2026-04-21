@@ -6,6 +6,7 @@ from .board import BOARD_SIZE, bit, iter_set_bits
 from .incremental import IncrementalState
 from .masks import DEFAULT_MASKS, MaskTables
 from .position import MoveType, Position, classify_move_bits
+from .tactical_detail import TacticalDetail, resolve_tactical_detail
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +114,31 @@ def _future_wins_from_move(
     return iter_set_bits(future_win_bits)
 
 
+def _future_win_count_from_move(
+    current_bits: int,
+    opponent_bits: int,
+    occupied_bits: int,
+    move: int,
+    tables: MaskTables,
+) -> int:
+    move_bit = bit(move)
+    future_win_bits = 0
+    for pattern in tables.incident5[move]:
+        pattern_bits = pattern.bitmask
+        if pattern_bits & opponent_bits:
+            continue
+
+        other_bits = pattern_bits ^ move_bit
+        if (current_bits & other_bits).bit_count() != 3:
+            continue
+
+        empty_bits = other_bits & ~occupied_bits
+        if empty_bits.bit_count() == 1:
+            future_win_bits |= empty_bits
+
+    return future_win_bits.bit_count()
+
+
 def _remaining_wins_after_move(
     move: int,
     winning_masks_by_move: dict[int, tuple[int, ...]],
@@ -125,6 +151,20 @@ def _remaining_wins_after_move(
         if any((mask & move_bit) == 0 for mask in masks):
             remaining.append(winning_move)
     return tuple(remaining)
+
+
+def _remaining_wins_after_move_count(
+    move: int,
+    winning_masks_by_move: dict[int, tuple[int, ...]],
+) -> int:
+    move_bit = bit(move)
+    remaining = 0
+    for winning_move, masks in winning_masks_by_move.items():
+        if winning_move == move:
+            continue
+        if any((mask & move_bit) == 0 for mask in masks):
+            remaining += 1
+    return remaining
 
 
 def _ordered_candidate_moves(position: Position, tables: MaskTables, candidate_moves: set[int] | None) -> tuple[int, ...]:
@@ -149,8 +189,15 @@ def analyze_tactics(
     inc_state: IncrementalState | None = None,
     include_move_maps: bool = True,
 ) -> TacticalSnapshot:
+    detail = resolve_tactical_detail(include_move_maps=include_move_maps)
+    needs_ordering_maps = detail is TacticalDetail.ORDERING
     if inc_state is not None:
-        summary = inc_state.tactical_summary(position.side_to_move, candidate_moves, include_move_maps)
+        summary = inc_state.tactical_summary(
+            position.side_to_move,
+            candidate_moves,
+            include_move_maps,
+            detail=detail,
+        )
         return TacticalSnapshot(
             candidate_moves=summary.candidate_moves,
             safe_moves=summary.safe_moves,
@@ -193,17 +240,22 @@ def analyze_tactics(
             continue
 
         safe_moves.append(move)
-        opponent_wins_after = _remaining_wins_after_move(move, opponent_winning_masks)
-        opponent_wins_after_move[move] = opponent_wins_after
+        if needs_ordering_maps:
+            opponent_wins_after = _remaining_wins_after_move(move, opponent_winning_masks)
+            opponent_wins_after_move[move] = opponent_wins_after
+            future_wins = _future_wins_from_move(current_bits, opponent_bits, occupied_bits, move, tables)
+            future_wins_by_move[move] = future_wins
+            opponent_remaining = len(opponent_wins_after)
+            future_win_count = len(future_wins)
+        else:
+            opponent_remaining = _remaining_wins_after_move_count(move, opponent_winning_masks)
+            future_win_count = _future_win_count_from_move(current_bits, opponent_bits, occupied_bits, move, tables)
 
-        future_wins = _future_wins_from_move(current_bits, opponent_bits, occupied_bits, move, tables)
-        future_wins_by_move[move] = future_wins
-
-        if opponent_winning_moves and not opponent_wins_after:
+        if opponent_winning_moves and opponent_remaining == 0:
             forced_blocks.append(move)
-        if not opponent_wins_after and future_wins:
+        if opponent_remaining == 0 and future_win_count > 0:
             safe_threats.append(move)
-            if len(future_wins) >= 2:
+            if future_win_count >= 2:
                 double_threats.append(move)
 
     return TacticalSnapshot(

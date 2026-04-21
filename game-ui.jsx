@@ -1159,7 +1159,7 @@ export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecor
               <div>Source: {debug?.source || "N/A"}</div>
               <div>Stage: {debug?.stage || "N/A"}</div>
               <div>Delay: {typeof debug?.delayMs === "number" ? `${debug.delayMs} ms` : "N/A"}</div>
-              <div>Worker: {typeof debug?.workerReady === "boolean" ? (debug.workerReady ? "Ready" : "No") : "N/A"}</div>
+              <div>Transport: {typeof (debug?.transportReady ?? debug?.workerReady) === "boolean" ? ((debug?.transportReady ?? debug?.workerReady) ? "Ready" : "No") : "N/A"}</div>
               <div>Reason: {debug?.reason || "N/A"}</div>
             </div>
           </div>

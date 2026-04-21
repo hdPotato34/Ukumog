@@ -178,3 +178,55 @@ model-server/
 1. 在 src/ 下初始化最小训练骨架（data -> train -> eval -> export）。
 2. 在 scripts/ 下补齐一键训练与一键评测脚本。
 3. 将 model_registry 与训练配置模板迁入 model-server 目录并统一引用路径。
+---
+
+## Serving MVP
+
+当前仓库已经补上一个最小可运行的 `ukumog-engine` HTTP 服务骨架，代码位于：
+
+- `model-server/src/serving/`
+
+本轮只覆盖：
+
+- `/health`
+- `/search`
+- `/analyze`
+
+约束：
+
+- 仅支持 `11x11`
+- 不做 `/cancel`
+- 每个请求新建一个 `SearchEngine()`
+
+### Python 环境
+
+建议使用 Python `3.11+`。
+
+从仓库根目录创建独立虚拟环境并安装：
+
+```powershell
+python -m venv model-server/.venv
+model-server\.venv\Scripts\python -m pip install -r model-server/requirements-serving.txt
+model-server\.venv\Scripts\python -m pip install -e .\ukumog-engine
+```
+
+### 本地启动
+
+从仓库根目录启动：
+
+```powershell
+python -m uvicorn app:app --app-dir model-server/src/serving --host 127.0.0.1 --port 8011
+```
+
+### 运行测试
+
+当前测试覆盖：
+
+- 适配层
+- FastAPI 服务层
+
+从仓库根目录运行：
+
+```powershell
+python -m unittest discover -s model-server/tests -p "test_*.py"
+```

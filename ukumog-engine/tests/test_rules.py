@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import random
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 
 from ukumog_engine import (
     DEFAULT_MASKS,
@@ -324,6 +327,12 @@ class SearchTests(unittest.TestCase):
         self.assertGreater(result.stats.quiet_nodes_limited, 0)
         self.assertGreater(result.stats.quiet_moves_pruned, 0)
 
+    def test_search_applies_additional_quiet_pruning_in_deeper_tree(self) -> None:
+        engine = SearchEngine()
+        result = engine.search(Position.initial(), max_depth=4)
+        self.assertEqual(result.best_move, coord_to_index(5, 5))
+        self.assertGreater(result.stats.futility_prunes + result.stats.late_move_prunes, 0)
+
     def test_search_make_unmake_does_not_mutate_root_position(self) -> None:
         position = self._position_from_history([41, 19, 52, 86, 6, 10, 111, 73])
         original = Position(
@@ -338,6 +347,32 @@ class SearchTests(unittest.TestCase):
 
         self.assertEqual(position, original)
         self.assertEqual(first.best_move, second.best_move)
+
+    def test_full_tactics_cache_can_satisfy_lite_snapshot_request(self) -> None:
+        position = self._position_from_history([41, 19, 52, 86, 6, 10, 111, 73])
+        engine = SearchEngine()
+        incremental_state = engine._search_incremental_state(position)
+
+        full_snapshot = engine._tactics(position, incremental_state, include_move_maps=True)
+        hits_before = engine.stats.tactics_cache_hits
+        lite_snapshot = engine._tactics(position, incremental_state, include_move_maps=False)
+
+        self.assertGreater(engine.stats.tactics_cache_hits, hits_before)
+        self.assertEqual(lite_snapshot.safe_moves, full_snapshot.safe_moves)
+        self.assertEqual(lite_snapshot.winning_moves, full_snapshot.winning_moves)
+        self.assertEqual(lite_snapshot.opponent_winning_moves, full_snapshot.opponent_winning_moves)
+
+    def test_quiescence_tt_hits_on_repeated_query(self) -> None:
+        engine = SearchEngine()
+        position = Position.initial()
+        incremental_state = engine._search_incremental_state(position)
+
+        first = engine._quiescence(position, incremental_state, -1_000_000, 1_000_000, 0, 0, True)
+        hits_before = engine.stats.qtt_hits
+        second = engine._quiescence(position, incremental_state, -1_000_000, 1_000_000, 0, 0, True)
+
+        self.assertEqual(first, second)
+        self.assertGreater(engine.stats.qtt_hits, hits_before)
 
 
 class TacticalSolverTests(unittest.TestCase):
@@ -386,6 +421,34 @@ class TacticalSolverTests(unittest.TestCase):
         self.assertEqual(result.best_move, coord_to_index(5, 5))
         self.assertGreater(result.stats.tactical_solver_queries, 0)
         self.assertGreater(result.stats.tactical_solver_wins, 0)
+
+
+class BenchmarkToolTests(unittest.TestCase):
+    def test_search_benchmark_script_emits_expected_fields(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            [sys.executable, "tools/search_benchmark.py", "--depth", "1"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        self.assertGreaterEqual(len(lines), 4)
+        self.assertTrue(any("name=initial" in line for line in lines))
+        expected_fields = (
+            "depth=",
+            "elapsed_s=",
+            "total_nodes=",
+            "tactics_s=",
+            "quiescence_s=",
+            "proof_s=",
+            "qtt_hits=",
+            "futility_prunes=",
+            "late_move_prunes=",
+        )
+        for field in expected_fields:
+            self.assertTrue(all(field in line for line in lines), msg=field)
 
 
 if __name__ == "__main__":

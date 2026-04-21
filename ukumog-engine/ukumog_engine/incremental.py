@@ -7,6 +7,7 @@ from .board import iter_set_bits
 from .eval_lookup import DEFAULT_EVAL_LOOKUPS, EvalLookupTables
 from .masks import DEFAULT_MASKS, MaskTables, PatternMask
 from .position import Color, MoveResult, MoveType, Position
+from .tactical_detail import TacticalDetail, resolve_tactical_detail
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,16 +273,14 @@ class IncrementalState:
         color = self.side_to_move if color is None else color
         self._validate_empty(move)
         player_counts5, opponent_counts5, _ = self._counts_for_color(color, 5)
-        for mask_index in self._indexed.incident5_indices[move]:
-            if opponent_counts5[mask_index] == 0 and player_counts5[mask_index] == 4:
-                return MoveType.WINNING_NOW
-
         player_counts4, opponent_counts4, _ = self._counts_for_color(color, 4)
-        for mask_index in self._indexed.incident4_indices[move]:
-            if opponent_counts4[mask_index] == 0 and player_counts4[mask_index] == 3:
-                return MoveType.POISON
-
-        return MoveType.SAFE
+        return self._classify_move_from_counts(
+            move,
+            player_counts5,
+            opponent_counts5,
+            player_counts4,
+            opponent_counts4,
+        )
 
     def move_result(self, move: int, color: Color | None = None) -> MoveResult:
         move_type = self.classify_move(move, color)
@@ -318,23 +317,16 @@ class IncrementalState:
     ) -> tuple[int, ...]:
         color = self.side_to_move if color is None else color
         player_counts, opponent_counts, _ = self._counts_for_color(color, 4)
-        candidate_bits = self._candidate_bits(candidate_moves) if candidate_moves is not None else None
-        winning_bits = self._candidate_bits(self.winning_moves(color, candidate_moves))
-
-        poison_bits = 0
-        for mask_index, mask_bits in enumerate(self._indexed.four_bitmasks):
-            if opponent_counts[mask_index] != 0 or player_counts[mask_index] != 3:
-                continue
-
-            missing_bits = mask_bits & ~self.occupied_bits
-            if missing_bits.bit_count() != 1:
-                continue
-            if candidate_bits is not None and not (missing_bits & candidate_bits):
-                continue
-            poison_bits |= missing_bits
-
-        poison_bits &= ~winning_bits
-        return iter_set_bits(poison_bits)
+        candidate_bits = self._candidate_bits(candidate_moves)
+        winning_moves = set(self.winning_moves(color, candidate_moves))
+        poison_moves = self._poison_move_set_from_counts(
+            player_counts,
+            opponent_counts,
+            candidate_bits,
+            winning_moves,
+        )
+        ordered_candidates = self.ordered_candidate_moves(candidate_moves)
+        return tuple(move for move in ordered_candidates if move in poison_moves)
 
     def has_immediate_win(self, color: Color | None = None) -> bool:
         return bool(self.winning_moves(color))
@@ -371,18 +363,7 @@ class IncrementalState:
         color = self.side_to_move if color is None else color
         self._validate_empty(move)
         player_counts, opponent_counts, _ = self._counts_for_color(color, 5)
-        move_bit = 1 << move
-
-        future_win_bits = 0
-        for mask_index in self._indexed.incident5_indices[move]:
-            if opponent_counts[mask_index] != 0 or player_counts[mask_index] != 3:
-                continue
-
-            missing_bits = self._indexed.five_bitmasks[mask_index] & ~self.occupied_bits & ~move_bit
-            if missing_bits.bit_count() == 1:
-                future_win_bits |= missing_bits
-
-        return iter_set_bits(future_win_bits)
+        return iter_set_bits(self._future_winning_bits_from_move(move, player_counts, opponent_counts))
 
     def winning_moves_after_move(
         self,
@@ -414,13 +395,122 @@ class IncrementalState:
                 remaining.append(winning_move)
         return tuple(remaining)
 
+    def _future_winning_bits_from_move(
+        self,
+        move: int,
+        player_counts: list[int],
+        opponent_counts: list[int],
+    ) -> int:
+        move_bit = 1 << move
+        future_win_bits = 0
+        for mask_index in self._indexed.incident5_indices[move]:
+            if opponent_counts[mask_index] != 0 or player_counts[mask_index] != 3:
+                continue
+
+            missing_bits = self._indexed.five_bitmasks[mask_index] & ~self.occupied_bits & ~move_bit
+            if missing_bits.bit_count() == 1:
+                future_win_bits |= missing_bits
+        return future_win_bits
+
+    def _classify_move_from_counts(
+        self,
+        move: int,
+        player_counts5: list[int],
+        opponent_counts5: list[int],
+        player_counts4: list[int],
+        opponent_counts4: list[int],
+    ) -> MoveType:
+        for mask_index in self._indexed.incident5_indices[move]:
+            if opponent_counts5[mask_index] == 0 and player_counts5[mask_index] == 4:
+                return MoveType.WINNING_NOW
+
+        for mask_index in self._indexed.incident4_indices[move]:
+            if opponent_counts4[mask_index] == 0 and player_counts4[mask_index] == 3:
+                return MoveType.POISON
+
+        return MoveType.SAFE
+
+    def _poison_move_set_from_counts(
+        self,
+        player_counts4: list[int],
+        opponent_counts4: list[int],
+        candidate_bits: int,
+        winning_moves: set[int],
+    ) -> set[int]:
+        poison_moves: set[int] = set()
+        occupied_bits = self.occupied_bits
+        for mask_index, mask_bits in enumerate(self._indexed.four_bitmasks):
+            if opponent_counts4[mask_index] != 0 or player_counts4[mask_index] != 3:
+                continue
+
+            missing_bits = mask_bits & ~occupied_bits
+            if missing_bits.bit_count() != 1 or not (missing_bits & candidate_bits):
+                continue
+
+            move = missing_bits.bit_length() - 1
+            if move not in winning_moves:
+                poison_moves.add(move)
+        return poison_moves
+
+    def _remaining_wins_after_move_count(
+        self,
+        move: int,
+        winning_masks_by_move: dict[int, tuple[int, ...]],
+    ) -> int:
+        move_bit = 1 << move
+        remaining = 0
+        for winning_move, masks in winning_masks_by_move.items():
+            if winning_move == move:
+                continue
+            if any((mask & move_bit) == 0 for mask in masks):
+                remaining += 1
+        return remaining
+
+    def move_maps(
+        self,
+        moves: list[int] | tuple[int, ...],
+        color: Color | None = None,
+        *,
+        candidate_moves: list[int] | tuple[int, ...] | set[int] | None = None,
+    ) -> tuple[dict[int, tuple[int, ...]], dict[int, tuple[int, ...]]]:
+        color = self.side_to_move if color is None else color
+        ordered_candidates = self.ordered_candidate_moves(candidate_moves)
+        return self._move_maps_for_ordered_candidates(moves, color, ordered_candidates)
+
+    def _move_maps_for_ordered_candidates(
+        self,
+        moves: list[int] | tuple[int, ...],
+        color: Color,
+        ordered_candidates: tuple[int, ...],
+    ) -> tuple[dict[int, tuple[int, ...]], dict[int, tuple[int, ...]]]:
+        opponent_winning_masks = self._winning_move_masks_by_move(color.opponent, ordered_candidates)
+        has_opponent_wins = bool(opponent_winning_masks)
+        player_counts, opponent_counts, _ = self._counts_for_color(color, 5)
+
+        future_wins_by_move: dict[int, tuple[int, ...]] = {}
+        opponent_wins_after_move: dict[int, tuple[int, ...]] = {}
+        for move in moves:
+            future_bits = self._future_winning_bits_from_move(move, player_counts, opponent_counts)
+            future_wins_by_move[move] = iter_set_bits(future_bits)
+            if has_opponent_wins:
+                opponent_wins_after_move[move] = self._remaining_wins_after_move(move, opponent_winning_masks)
+            else:
+                opponent_wins_after_move[move] = ()
+
+        return future_wins_by_move, opponent_wins_after_move
+
     def tactical_summary(
         self,
         color: Color | None = None,
         candidate_moves: list[int] | tuple[int, ...] | set[int] | None = None,
         include_move_maps: bool = True,
+        detail: TacticalDetail | None = None,
     ) -> IncrementalTacticalSummary:
-        black_summary, white_summary = self.paired_tactical_summaries(candidate_moves, include_move_maps)
+        black_summary, white_summary = self.paired_tactical_summaries(
+            candidate_moves,
+            include_move_maps,
+            detail=detail,
+        )
         color = self.side_to_move if color is None else color
         return black_summary if color is Color.BLACK else white_summary
 
@@ -428,14 +518,36 @@ class IncrementalState:
         self,
         candidate_moves: list[int] | tuple[int, ...] | set[int] | None = None,
         include_move_maps: bool = True,
+        detail: TacticalDetail | None = None,
     ) -> tuple[IncrementalTacticalSummary, IncrementalTacticalSummary]:
+        resolved_detail = resolve_tactical_detail(detail, include_move_maps=include_move_maps)
+        needs_ordering_maps = resolved_detail is TacticalDetail.ORDERING
         ordered_candidates = self.ordered_candidate_moves(candidate_moves)
+        candidate_bits = self._candidate_bits(ordered_candidates)
         black_winning_masks = self._winning_move_masks_by_move(Color.BLACK, ordered_candidates)
         white_winning_masks = self._winning_move_masks_by_move(Color.WHITE, ordered_candidates)
         black_winning_moves = tuple(move for move in ordered_candidates if move in black_winning_masks)
         white_winning_moves = tuple(move for move in ordered_candidates if move in white_winning_masks)
         black_winning_set = set(black_winning_moves)
         white_winning_set = set(white_winning_moves)
+        black_player_counts5, black_opponent_counts5, _ = self._counts_for_color(Color.BLACK, 5)
+        white_player_counts5, white_opponent_counts5, _ = self._counts_for_color(Color.WHITE, 5)
+        black_player_counts4, black_opponent_counts4, _ = self._counts_for_color(Color.BLACK, 4)
+        white_player_counts4, white_opponent_counts4, _ = self._counts_for_color(Color.WHITE, 4)
+        black_poison_set = self._poison_move_set_from_counts(
+            black_player_counts4,
+            black_opponent_counts4,
+            candidate_bits,
+            black_winning_set,
+        )
+        white_poison_set = self._poison_move_set_from_counts(
+            white_player_counts4,
+            white_opponent_counts4,
+            candidate_bits,
+            white_winning_set,
+        )
+        black_has_opponent_wins = bool(white_winning_moves)
+        white_has_opponent_wins = bool(black_winning_moves)
 
         black_safe_moves: list[int] = []
         black_poison_moves: list[int] = []
@@ -455,45 +567,87 @@ class IncrementalState:
 
         for move in ordered_candidates:
             if move not in black_winning_set:
-                black_move_type = self.classify_move(move, Color.BLACK)
-                if black_move_type is MoveType.POISON:
+                if move in black_poison_set:
                     black_poison_moves.append(move)
                 else:
                     black_safe_moves.append(move)
-                    black_opponent_wins_after = self._remaining_wins_after_move(move, white_winning_masks)
-                    if include_move_maps:
-                        black_opponent_wins_after_move[move] = black_opponent_wins_after
-
-                    black_future_wins = self.future_winning_moves_from_move(move, Color.BLACK)
-                    if include_move_maps:
+                    if needs_ordering_maps:
+                        black_future_bits = self._future_winning_bits_from_move(
+                            move,
+                            black_player_counts5,
+                            black_opponent_counts5,
+                        )
+                        black_future_wins = iter_set_bits(black_future_bits)
                         black_future_wins_by_move[move] = black_future_wins
+                        black_future_count = black_future_bits.bit_count()
+                        if black_has_opponent_wins:
+                            black_opponent_wins_after = self._remaining_wins_after_move(move, white_winning_masks)
+                            black_opponent_remaining = len(black_opponent_wins_after)
+                        else:
+                            black_opponent_wins_after = ()
+                            black_opponent_remaining = 0
+                        black_opponent_wins_after_move[move] = black_opponent_wins_after
+                    else:
+                        black_future_count = self._future_winning_bits_from_move(
+                            move,
+                            black_player_counts5,
+                            black_opponent_counts5,
+                        ).bit_count()
+                        if black_has_opponent_wins:
+                            black_opponent_remaining = self._remaining_wins_after_move_count(
+                                move,
+                                white_winning_masks,
+                            )
+                        else:
+                            black_opponent_remaining = 0
 
-                    if white_winning_moves and not black_opponent_wins_after:
+                    if black_has_opponent_wins and black_opponent_remaining == 0:
                         black_forced_blocks.append(move)
-                    if not black_opponent_wins_after and black_future_wins:
+                    if black_opponent_remaining == 0 and black_future_count > 0:
                         black_safe_threats.append(move)
-                        if len(black_future_wins) >= 2:
+                        if black_future_count >= 2:
                             black_double_threats.append(move)
 
             if move not in white_winning_set:
-                white_move_type = self.classify_move(move, Color.WHITE)
-                if white_move_type is MoveType.POISON:
+                if move in white_poison_set:
                     white_poison_moves.append(move)
                 else:
                     white_safe_moves.append(move)
-                    white_opponent_wins_after = self._remaining_wins_after_move(move, black_winning_masks)
-                    if include_move_maps:
-                        white_opponent_wins_after_move[move] = white_opponent_wins_after
-
-                    white_future_wins = self.future_winning_moves_from_move(move, Color.WHITE)
-                    if include_move_maps:
+                    if needs_ordering_maps:
+                        white_future_bits = self._future_winning_bits_from_move(
+                            move,
+                            white_player_counts5,
+                            white_opponent_counts5,
+                        )
+                        white_future_wins = iter_set_bits(white_future_bits)
                         white_future_wins_by_move[move] = white_future_wins
+                        white_future_count = white_future_bits.bit_count()
+                        if white_has_opponent_wins:
+                            white_opponent_wins_after = self._remaining_wins_after_move(move, black_winning_masks)
+                            white_opponent_remaining = len(white_opponent_wins_after)
+                        else:
+                            white_opponent_wins_after = ()
+                            white_opponent_remaining = 0
+                        white_opponent_wins_after_move[move] = white_opponent_wins_after
+                    else:
+                        white_future_count = self._future_winning_bits_from_move(
+                            move,
+                            white_player_counts5,
+                            white_opponent_counts5,
+                        ).bit_count()
+                        if white_has_opponent_wins:
+                            white_opponent_remaining = self._remaining_wins_after_move_count(
+                                move,
+                                black_winning_masks,
+                            )
+                        else:
+                            white_opponent_remaining = 0
 
-                    if black_winning_moves and not white_opponent_wins_after:
+                    if white_has_opponent_wins and white_opponent_remaining == 0:
                         white_forced_blocks.append(move)
-                    if not white_opponent_wins_after and white_future_wins:
+                    if white_opponent_remaining == 0 and white_future_count > 0:
                         white_safe_threats.append(move)
-                        if len(white_future_wins) >= 2:
+                        if white_future_count >= 2:
                             white_double_threats.append(move)
 
         black_summary = IncrementalTacticalSummary(

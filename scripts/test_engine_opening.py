@@ -19,7 +19,7 @@ def main():
 
         page.get_by_role("button", name="Configure").click()
         page.get_by_role("button", name="White").click()
-        page.get_by_role("button", name="Play vs Engine").click()
+        page.get_by_role("button", name="Player vs hd(early access)").click()
 
         page.wait_for_load_state("networkidle")
         page.wait_for_selector("text=Black's turn", timeout=5000)

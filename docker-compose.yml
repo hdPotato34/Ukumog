@@ -8,14 +8,15 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8787
+      UKUMOG_HOST: 127.0.0.1
+      UKUMOG_PORT: 8011
     ports:
       - "8787:8787"
+      - "8011:8011"
     healthcheck:
       test:
         - CMD
-        - node
-        - -e
-        - const http=require('http');const req=http.get({host:'127.0.0.1',port:process.env.PORT||8787,path:'/health'},res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.setTimeout(3000,()=>{req.destroy();process.exit(1);});
+        - /usr/local/bin/healthcheck.sh
       interval: 30s
       timeout: 5s
       retries: 3

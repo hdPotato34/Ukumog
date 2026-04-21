@@ -179,6 +179,27 @@ class IncrementalStateTests(unittest.TestCase):
             self.assertEqual(light.future_wins_by_move, {}, msg=f"seed={seed}")
             self.assertEqual(light.opponent_wins_after_move, {}, msg=f"seed={seed}")
 
+    def test_move_maps_match_full_snapshot_for_subset(self) -> None:
+        position = _random_nonterminal_position(3601, plies=12)
+        state = IncrementalState.from_position(position)
+        full = analyze_tactics(position, inc_state=state)
+        subset = tuple(full.safe_moves[: min(5, len(full.safe_moves))])
+
+        future_wins_by_move, opponent_wins_after_move = state.move_maps(
+            subset,
+            position.side_to_move,
+            candidate_moves=full.candidate_moves,
+        )
+
+        self.assertEqual(
+            future_wins_by_move,
+            {move: full.future_wins_by_move[move] for move in subset},
+        )
+        self.assertEqual(
+            opponent_wins_after_move,
+            {move: full.opponent_wins_after_move[move] for move in subset},
+        )
+
     def test_incremental_tactical_queries_match_known_forcing_position(self) -> None:
         position = Position.from_rows(
             [

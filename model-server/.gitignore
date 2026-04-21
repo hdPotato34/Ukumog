@@ -5,6 +5,8 @@ artifacts/
 # Local environment / secrets
 .env
 .env.*
+.venv/
+venv/
 *.key
 *.pem
 

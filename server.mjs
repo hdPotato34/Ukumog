@@ -10,6 +10,12 @@ const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
 const CLOSED_ROOM_TTL_MS = 60_000;
 const ACTIVE_SESSION_WINDOW_MS = 90_000;
+const DEFAULT_ENGINE_SERVICE_ORIGIN = "http://127.0.0.1:8011";
+const ENGINE_SERVICE_ORIGIN = normalizeServiceOrigin(
+  process.env.ENGINE_SERVICE_ORIGIN || process.env.MODEL_SERVER_ORIGIN || DEFAULT_ENGINE_SERVICE_ORIGIN,
+);
+const ENGINE_SERVICE_TIMEOUT_MS = normalizePositiveInteger(process.env.ENGINE_SERVICE_TIMEOUT_MS, 15_000);
+const SUPPORTED_ENGINE_BOARD_SIZE = 11;
 const INITIAL_RATING = 1000;
 const STABLE_RATING_K = 20;
 const HOT_RATING_K = 60;
@@ -87,6 +93,16 @@ function normalizeUserRecord(user) {
   };
 }
 
+function normalizePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeServiceOrigin(value) {
+  const clean = String(value || "").trim().replace(/\/+$/, "");
+  return clean || DEFAULT_ENGINE_SERVICE_ORIGIN;
+}
+
 function decorateIdentityWithRating(identity, fallbackRating = null, fallbackGames = null) {
   if (!identity) return null;
   const rating = identity.authenticated ? normalizeRatingValue(identity.rating, fallbackRating ?? INITIAL_RATING) : null;
@@ -141,10 +157,175 @@ function normalizeDisplayName(input, fallback = "") {
   return clean || fallback;
 }
 
-function createHttpError(statusCode, message) {
+function createHttpError(statusCode, message, code = "") {
   const error = new Error(message);
   error.statusCode = statusCode;
+  if (code) {
+    error.code = code;
+  }
   return error;
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function createEngineErrorPayload(code, message) {
+  return {
+    type: "error",
+    code,
+    message,
+  };
+}
+
+function buildEngineActorLabel(viewer) {
+  if (!viewer) {
+    return "anonymous";
+  }
+  if (viewer.loginId) {
+    return viewer.loginId;
+  }
+  if (viewer.displayName) {
+    return viewer.displayName;
+  }
+  return viewer.authenticated ? "user" : "guest";
+}
+
+function logEngineProxy(pathname, statusCode, durationMs, viewer, detail = "") {
+  const suffix = detail ? ` ${detail}` : "";
+  console.log(`[engine-proxy] ${pathname} ${statusCode} ${durationMs}ms actor=${buildEngineActorLabel(viewer)}${suffix}`);
+}
+
+function validateEngineRequestBody(body) {
+  if (!isPlainObject(body)) {
+    throw createHttpError(400, "Engine request body must be a JSON object.", "invalid_request");
+  }
+
+  if (!isPlainObject(body.state) || !Array.isArray(body.state.board)) {
+    throw createHttpError(400, "Engine request body must include state.board.", "invalid_request");
+  }
+
+  if (!isPlainObject(body.config)) {
+    throw createHttpError(400, "Engine request body must include config.boardSize.", "invalid_request");
+  }
+
+  const boardSize = Number(body.config.boardSize);
+  if (!Number.isInteger(boardSize)) {
+    throw createHttpError(400, "config.boardSize must be an integer.", "invalid_request");
+  }
+
+  if (boardSize !== SUPPORTED_ENGINE_BOARD_SIZE) {
+    throw createHttpError(
+      400,
+      `The engine service currently supports only ${SUPPORTED_ENGINE_BOARD_SIZE}x${SUPPORTED_ENGINE_BOARD_SIZE} boards.`,
+      "unsupported_board_size",
+    );
+  }
+
+  const timeBudgetMs = Number(body.timeBudgetMs);
+  if (!Number.isInteger(timeBudgetMs) || timeBudgetMs <= 0) {
+    throw createHttpError(400, "timeBudgetMs must be a positive integer.", "invalid_request");
+  }
+
+  const maxDepth = Number(body.maxDepth);
+  if (!Number.isInteger(maxDepth) || maxDepth <= 0) {
+    throw createHttpError(400, "maxDepth must be a positive integer.", "invalid_request");
+  }
+
+  return {
+    ...body,
+    config: {
+      ...body.config,
+      boardSize,
+    },
+    timeBudgetMs,
+    maxDepth,
+  };
+}
+
+async function parseJsonResponse(response) {
+  const raw = await response.text();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw createHttpError(502, "The engine service returned invalid JSON.", "invalid_engine_response");
+  }
+}
+
+function normalizeEngineErrorPayload(payload, fallbackMessage) {
+  if (isPlainObject(payload)) {
+    return createEngineErrorPayload(
+      typeof payload.code === "string" && payload.code ? payload.code : "engine_request_failed",
+      typeof payload.message === "string" && payload.message ? payload.message : fallbackMessage,
+    );
+  }
+
+  return createEngineErrorPayload("engine_request_failed", fallbackMessage);
+}
+
+async function forwardEngineRequest(upstreamPath, { method = "GET", body = null, viewer = null } = {}) {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ENGINE_SERVICE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${ENGINE_SERVICE_ORIGIN}${upstreamPath}`, {
+      method,
+      headers: {
+        Accept: "application/json",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const payload = await parseJsonResponse(response);
+    const durationMs = Date.now() - startedAt;
+
+    if (!response.ok) {
+      const errorPayload = normalizeEngineErrorPayload(payload, "The engine service rejected the request.");
+      logEngineProxy(upstreamPath, response.status, durationMs, viewer, `code=${errorPayload.code}`);
+      return {
+        statusCode: response.status,
+        payload: errorPayload,
+      };
+    }
+
+    if (!isPlainObject(payload)) {
+      throw createHttpError(502, "The engine service returned an unexpected payload.", "invalid_engine_response");
+    }
+
+    logEngineProxy(upstreamPath, response.status, durationMs, viewer);
+    return {
+      statusCode: response.status,
+      payload,
+    };
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    if (error?.name === "AbortError") {
+      logEngineProxy(upstreamPath, 504, durationMs, viewer, "code=engine_timeout");
+      return {
+        statusCode: 504,
+        payload: createEngineErrorPayload("engine_timeout", "The engine service timed out."),
+      };
+    }
+
+    if (error?.statusCode) {
+      logEngineProxy(upstreamPath, error.statusCode, durationMs, viewer, `code=${error.code || "engine_proxy_error"}`);
+      throw error;
+    }
+
+    logEngineProxy(upstreamPath, 503, durationMs, viewer, "code=engine_unavailable");
+    return {
+      statusCode: 503,
+      payload: createEngineErrorPayload("engine_unavailable", "The engine service is currently unavailable."),
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function hashPassword(password, salt = randomBytes(16).toString("hex")) {
@@ -1590,6 +1771,42 @@ async function handleAuthApi(req, res, pathname) {
   writeJson(res, 404, { type: "error", message: "Auth route not found." });
 }
 
+async function handleEngineApi(req, res, pathname, viewer) {
+  if (pathname === "/api/engine/health") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, createEngineErrorPayload("method_not_allowed", "Method not allowed."));
+      return;
+    }
+
+    const proxied = await forwardEngineRequest("/health", { method: "GET", viewer });
+    writeJson(res, proxied.statusCode, proxied.payload);
+    return;
+  }
+
+  if (pathname === "/api/engine/search" || pathname === "/api/engine/analyze") {
+    if (req.method !== "POST") {
+      writeJson(res, 405, createEngineErrorPayload("method_not_allowed", "Method not allowed."));
+      return;
+    }
+
+    if (!viewer) {
+      throw createHttpError(401, "A session is required to use the engine service.", "auth_required");
+    }
+
+    const body = validateEngineRequestBody(await readJsonBody(req));
+    const upstreamPath = pathname === "/api/engine/search" ? "/search" : "/analyze";
+    const proxied = await forwardEngineRequest(upstreamPath, {
+      method: "POST",
+      body,
+      viewer,
+    });
+    writeJson(res, proxied.statusCode, proxied.payload);
+    return;
+  }
+
+  writeJson(res, 404, createEngineErrorPayload("not_found", "Engine route not found."));
+}
+
 async function handleApi(req, res, pathname, searchParams) {
   if (req.method === "OPTIONS") {
     writeEmpty(res, 204);
@@ -1610,6 +1827,11 @@ async function handleApi(req, res, pathname, searchParams) {
   const session = findSessionByToken(sessionToken);
   touchSession(session);
   const viewer = buildViewer(session);
+
+  if (pathname.startsWith("/api/engine/")) {
+    await handleEngineApi(req, res, pathname, viewer);
+    return;
+  }
 
   if (pathname === "/api/me" && req.method === "GET") {
     writeJson(res, 200, { viewer: exposeViewerFromSession(session) });
@@ -1807,6 +2029,7 @@ async function handleRequest(req, res) {
     const statusCode = error?.statusCode || 500;
     writeJson(res, statusCode, {
       type: "error",
+      ...(error?.code ? { code: error.code } : {}),
       message: error instanceof Error ? error.message : "Internal server error.",
     });
   }

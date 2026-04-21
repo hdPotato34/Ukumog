@@ -622,7 +622,7 @@ function CreateRoomModal({ open, onClose, createConfig, createPublicVisible, onC
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="hub-btn" onClick={onCreatePublic} style={solidButton(false)}>Create Online Room</button>
         <button className="ghost-btn" onClick={onStartLocal} style={ghostButton(false)}>Local Practice</button>
-        <button className="ghost-btn" onClick={onStartEngine} style={ghostButton(false)}>Play vs Engine</button>
+        <button className="ghost-btn" onClick={onStartEngine} style={ghostButton(false)}>Player vs hd(early access)</button>
       </div>
     </ModalShell>
   );
