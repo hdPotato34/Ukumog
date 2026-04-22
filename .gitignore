@@ -4,3 +4,4 @@ build/
 site/
 data/
 tmp_*.log
+.tmp-docker-config/
