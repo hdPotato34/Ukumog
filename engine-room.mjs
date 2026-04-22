@@ -1,4 +1,5 @@
 import { applyMove, createMatchState, opp, sanitizeConfig } from "./game-core.mjs";
+import { sanitizePlayEngineSettings } from "./engine/engine-settings.mjs";
 import { moveToNotation } from "./game-record.mjs";
 
 function generateId(prefix = "engine") {
@@ -63,6 +64,7 @@ export function createEngineRoomSession(config, viewer, options = {}) {
   const gameId = generateId("engine-game");
   const player = buildViewerParticipant(viewer, sides.playerSide);
   const engine = buildEngineParticipant(sides.engineSide, options.engineName || "Engine");
+  const engineSettings = sanitizePlayEngineSettings(options.engineSettings);
 
   return {
     mode: "engine",
@@ -76,6 +78,7 @@ export function createEngineRoomSession(config, viewer, options = {}) {
     notice: `Local engine room ready. You play ${sides.playerSide === "B" ? "Black" : "White"}.`,
     lastError: "",
     analysis: null,
+    engineSettings,
     engineDebug: {
       source: "init",
       stage: "idle",

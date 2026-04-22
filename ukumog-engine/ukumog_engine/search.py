@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
 
-from .board import BOARD_CELLS, BOARD_SIZE, index_to_coord
+from .board import BOARD_SIZE, index_to_coord
 from .incremental import IncrementalState
 from .masks import DEFAULT_MASKS, MaskTables
 from .position import Color, MoveResult, Position, play_move
@@ -356,11 +356,12 @@ class SearchResult:
     principal_variation: tuple[int, ...]
     depth: int
     stats: SearchStats
+    board_size: int = BOARD_SIZE
 
     def to_dict(self) -> dict[str, object]:
         best_move_coord = None
         if self.best_move is not None:
-            row, col = index_to_coord(self.best_move, BOARD_SIZE)
+            row, col = index_to_coord(self.best_move, self.board_size)
             best_move_coord = {"row": row, "col": col}
         return {
             "best_move": self.best_move,
@@ -375,7 +376,7 @@ class SearchResult:
         if self.best_move is None:
             move_text = "best_move=None"
         else:
-            row, col = index_to_coord(self.best_move, BOARD_SIZE)
+            row, col = index_to_coord(self.best_move, self.board_size)
             move_text = f"best_move={self.best_move} ({row}, {col})"
         return (
             f"{move_text} score={self.score} depth={self.depth}\n"
@@ -409,9 +410,9 @@ def _side_index(color: Color) -> int:
     return 0 if color is Color.BLACK else 1
 
 
-def _move_proximity_score(move: int) -> int:
-    row, col = index_to_coord(move, BOARD_SIZE)
-    center = BOARD_SIZE // 2
+def _move_proximity_score(move: int, board_size: int) -> int:
+    row, col = index_to_coord(move, board_size)
+    center = board_size // 2
     return -abs(row - center) - abs(col - center)
 
 
@@ -468,7 +469,7 @@ class SearchEngine:
         self.qtt: dict[tuple[int, int, int], TTEntry] = {}
         self.tactics_cache: dict[tuple[int, int, int, int], TacticalSnapshot] = {}
         self.tactics_pair_cache: dict[tuple[int, int, int], tuple[TacticalSnapshot, TacticalSnapshot]] = {}
-        self.history: list[list[int]] = [[0] * BOARD_CELLS for _ in range(2)]
+        self.history: list[list[int]] = [[0] * (self.tables.board_size * self.tables.board_size) for _ in range(2)]
         self.killers: dict[int, list[int | None]] = {}
         self.stats = SearchStats()
         self.tactical_solver = TacticalSolver(
@@ -491,6 +492,10 @@ class SearchEngine:
         max_time_ms: int | None = None,
         max_nodes: int | None = None,
     ) -> SearchResult:
+        if position.board_size != self.tables.board_size:
+            raise ValueError(
+                f"position board size {position.board_size} does not match search tables {self.tables.board_size}"
+            )
         self.stats = SearchStats()
         self.qtt = {}
         self.tactics_cache = {}
@@ -545,6 +550,7 @@ class SearchEngine:
             principal_variation=principal_variation,
             depth=self.stats.max_depth_completed,
             stats=self.stats,
+            board_size=self.tables.board_size,
         )
 
     def _aspiration_search(
@@ -1187,7 +1193,7 @@ class SearchEngine:
             if tt_move is not None and move == tt_move:
                 return 10_000_000
 
-            score = _move_proximity_score(move)
+            score = _move_proximity_score(move, self.tables.board_size)
             if move in winning_moves:
                 return WIN_MOVE_BONUS + score
             if move in forced_blocks:

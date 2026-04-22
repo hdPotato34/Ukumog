@@ -15,7 +15,7 @@ const ENGINE_SERVICE_ORIGIN = normalizeServiceOrigin(
   process.env.ENGINE_SERVICE_ORIGIN || process.env.MODEL_SERVER_ORIGIN || DEFAULT_ENGINE_SERVICE_ORIGIN,
 );
 const ENGINE_SERVICE_TIMEOUT_MS = normalizePositiveInteger(process.env.ENGINE_SERVICE_TIMEOUT_MS, 15_000);
-const SUPPORTED_ENGINE_BOARD_SIZE = 11;
+const ENGINE_CAPABILITIES_CACHE_MS = normalizePositiveInteger(process.env.ENGINE_CAPABILITIES_CACHE_MS, 15_000);
 const INITIAL_RATING = 1000;
 const STABLE_RATING_K = 20;
 const HOT_RATING_K = 60;
@@ -39,10 +39,15 @@ const dataRoot = path.join(process.cwd(), "data");
 const dataFile = path.join(dataRoot, "app-state.json");
 
 const rooms = new Map();
+const activeEngineRequests = new Map();
 let persistentState = {
   users: [],
   sessions: [],
   matchHistory: [],
+};
+let engineCapabilitiesCache = {
+  supportedBoardSizes: [],
+  expiresAt: 0,
 };
 let persistQueue = Promise.resolve();
 
@@ -196,6 +201,18 @@ function logEngineProxy(pathname, statusCode, durationMs, viewer, detail = "") {
   console.log(`[engine-proxy] ${pathname} ${statusCode} ${durationMs}ms actor=${buildEngineActorLabel(viewer)}${suffix}`);
 }
 
+function buildEngineRequestKey(viewer, pathname) {
+  const actor = viewer?.userId || viewer?.loginId || viewer?.displayName || "anonymous";
+  return `${actor}:${pathname}`;
+}
+
+function abortEngineRequestEntry(entry, reason = "superseded") {
+  if (!entry?.controller || entry.controller.signal.aborted) {
+    return;
+  }
+  entry.controller.abort(reason);
+}
+
 function validateEngineRequestBody(body) {
   if (!isPlainObject(body)) {
     throw createHttpError(400, "Engine request body must be a JSON object.", "invalid_request");
@@ -213,13 +230,11 @@ function validateEngineRequestBody(body) {
   if (!Number.isInteger(boardSize)) {
     throw createHttpError(400, "config.boardSize must be an integer.", "invalid_request");
   }
-
-  if (boardSize !== SUPPORTED_ENGINE_BOARD_SIZE) {
-    throw createHttpError(
-      400,
-      `The engine service currently supports only ${SUPPORTED_ENGINE_BOARD_SIZE}x${SUPPORTED_ENGINE_BOARD_SIZE} boards.`,
-      "unsupported_board_size",
-    );
+  if (body.state.board.length !== boardSize) {
+    throw createHttpError(400, `state.board must contain ${boardSize} rows.`, "invalid_request");
+  }
+  if (!body.state.board.every((row) => Array.isArray(row) && row.length === boardSize)) {
+    throw createHttpError(400, `each state.board row must contain ${boardSize} cells.`, "invalid_request");
   }
 
   const timeBudgetMs = Number(body.timeBudgetMs);
@@ -241,6 +256,44 @@ function validateEngineRequestBody(body) {
     timeBudgetMs,
     maxDepth,
   };
+}
+
+function normalizeSupportedBoardSizes(payload) {
+  if (!isPlainObject(payload?.capabilities) || !Array.isArray(payload.capabilities.supportedBoardSizes)) {
+    return [];
+  }
+  return payload.capabilities.supportedBoardSizes
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0)
+    .sort((left, right) => left - right);
+}
+
+function formatSupportedBoardSizes(sizes) {
+  if (!Array.isArray(sizes) || !sizes.length) {
+    return "no board sizes";
+  }
+  return sizes.map((size) => `${size}x${size}`).join(", ");
+}
+
+async function getSupportedEngineBoardSizes(viewer = null) {
+  const now = Date.now();
+  if (engineCapabilitiesCache.expiresAt > now && engineCapabilitiesCache.supportedBoardSizes.length) {
+    return engineCapabilitiesCache.supportedBoardSizes;
+  }
+
+  const proxied = await forwardEngineRequest("/health", { method: "GET", viewer });
+  if (proxied.statusCode !== 200) {
+    return [];
+  }
+
+  const supportedBoardSizes = normalizeSupportedBoardSizes(proxied.payload);
+  if (supportedBoardSizes.length) {
+    engineCapabilitiesCache = {
+      supportedBoardSizes,
+      expiresAt: now + ENGINE_CAPABILITIES_CACHE_MS,
+    };
+  }
+  return supportedBoardSizes;
 }
 
 async function parseJsonResponse(response) {
@@ -267,10 +320,14 @@ function normalizeEngineErrorPayload(payload, fallbackMessage) {
   return createEngineErrorPayload("engine_request_failed", fallbackMessage);
 }
 
-async function forwardEngineRequest(upstreamPath, { method = "GET", body = null, viewer = null } = {}) {
+async function forwardEngineRequest(upstreamPath, { method = "GET", body = null, viewer = null, controller = null } = {}) {
   const startedAt = Date.now();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ENGINE_SERVICE_TIMEOUT_MS);
+  const requestController = controller || new AbortController();
+  const timeoutId = setTimeout(() => {
+    if (!requestController.signal.aborted) {
+      requestController.abort("timeout");
+    }
+  }, ENGINE_SERVICE_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${ENGINE_SERVICE_ORIGIN}${upstreamPath}`, {
@@ -280,7 +337,7 @@ async function forwardEngineRequest(upstreamPath, { method = "GET", body = null,
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
+      signal: requestController.signal,
     });
     const payload = await parseJsonResponse(response);
     const durationMs = Date.now() - startedAt;
@@ -306,6 +363,21 @@ async function forwardEngineRequest(upstreamPath, { method = "GET", body = null,
   } catch (error) {
     const durationMs = Date.now() - startedAt;
     if (error?.name === "AbortError") {
+      const abortReason = requestController.signal.reason;
+      if (abortReason === "superseded") {
+        logEngineProxy(upstreamPath, 499, durationMs, viewer, "code=engine_request_superseded");
+        return {
+          statusCode: 499,
+          payload: createEngineErrorPayload("engine_request_superseded", "The engine request was superseded by a newer request."),
+        };
+      }
+      if (abortReason === "client_disconnect") {
+        logEngineProxy(upstreamPath, 499, durationMs, viewer, "code=engine_client_disconnected");
+        return {
+          statusCode: 499,
+          payload: createEngineErrorPayload("engine_client_disconnected", "The client disconnected before the engine request completed."),
+        };
+      }
       logEngineProxy(upstreamPath, 504, durationMs, viewer, "code=engine_timeout");
       return {
         statusCode: 504,
@@ -1779,6 +1851,15 @@ async function handleEngineApi(req, res, pathname, viewer) {
     }
 
     const proxied = await forwardEngineRequest("/health", { method: "GET", viewer });
+    if (proxied.statusCode === 200) {
+      const supportedBoardSizes = normalizeSupportedBoardSizes(proxied.payload);
+      if (supportedBoardSizes.length) {
+        engineCapabilitiesCache = {
+          supportedBoardSizes,
+          expiresAt: Date.now() + ENGINE_CAPABILITIES_CACHE_MS,
+        };
+      }
+    }
     writeJson(res, proxied.statusCode, proxied.payload);
     return;
   }
@@ -1794,14 +1875,47 @@ async function handleEngineApi(req, res, pathname, viewer) {
     }
 
     const body = validateEngineRequestBody(await readJsonBody(req));
+    const supportedBoardSizes = await getSupportedEngineBoardSizes(viewer);
+    if (supportedBoardSizes.length && !supportedBoardSizes.includes(body.config.boardSize)) {
+      throw createHttpError(
+        400,
+        `The engine service currently supports ${formatSupportedBoardSizes(supportedBoardSizes)} boards.`,
+        "unsupported_board_size",
+      );
+    }
     const upstreamPath = pathname === "/api/engine/search" ? "/search" : "/analyze";
-    const proxied = await forwardEngineRequest(upstreamPath, {
-      method: "POST",
-      body,
-      viewer,
-    });
-    writeJson(res, proxied.statusCode, proxied.payload);
-    return;
+    const requestKey = buildEngineRequestKey(viewer, pathname);
+    const currentEntry = {
+      key: requestKey,
+      controller: new AbortController(),
+    };
+
+    const previousEntry = activeEngineRequests.get(requestKey);
+    if (previousEntry) {
+      abortEngineRequestEntry(previousEntry, "superseded");
+    }
+    activeEngineRequests.set(requestKey, currentEntry);
+
+    const abortOnDisconnect = () => {
+      abortEngineRequestEntry(currentEntry, "client_disconnect");
+    };
+    req.on("close", abortOnDisconnect);
+
+    try {
+      const proxied = await forwardEngineRequest(upstreamPath, {
+        method: "POST",
+        body,
+        viewer,
+        controller: currentEntry.controller,
+      });
+      writeJson(res, proxied.statusCode, proxied.payload);
+      return;
+    } finally {
+      req.off("close", abortOnDisconnect);
+      if (activeEngineRequests.get(requestKey) === currentEntry) {
+        activeEngineRequests.delete(requestKey);
+      }
+    }
   }
 
   writeJson(res, 404, createEngineErrorPayload("not_found", "Engine route not found."));

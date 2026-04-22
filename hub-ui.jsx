@@ -9,6 +9,14 @@ import {
   formatColorSetting,
   sanitizeConfig,
 } from "./game-core.mjs";
+import {
+  ENGINE_DEPTH_MAX,
+  ENGINE_DEPTH_MIN,
+  ENGINE_TIME_BUDGET_MAX_MS,
+  ENGINE_TIME_BUDGET_MIN_MS,
+  sanitizePlayEngineSettings,
+} from "./engine/engine-settings.mjs";
+import { formatSupportedBoardSizes, supportsEngineBoardSize } from "./engine/engine-capabilities.mjs";
 import { normalizeRoomId } from "./online-room.mjs";
 
 const BASE_CSS = `@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#7e6840 #111821}html,body{margin:0}button,input{transition:all .15s ease}button,input,textarea{font:inherit}::selection{background:rgba(214,183,114,.24);color:#f5e7c3}::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-track{background:linear-gradient(180deg,#0f151c,#111922);border-radius:999px}::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#8b7245,#5e4a2b);border:2px solid #111821;border-radius:999px}::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#a48652,#6f5834)}.hub-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}.ghost-btn:hover:not(:disabled){border-color:#6a5030!important;color:#d8be86!important;background:rgba(214,190,136,.04)}.top-input:focus{outline:none;border-color:#8d713e!important;box-shadow:0 0 0 2px rgba(232,201,106,.08)}`;
@@ -266,6 +274,10 @@ function formatBaseTimeOption(seconds) {
     return `${Math.round(seconds / 60)}m`;
   }
   return `${seconds}s`;
+}
+
+function formatMilliseconds(value) {
+  return `${Math.round(Number(value) || 0)} ms`;
 }
 
 function getClockPresetId(config) {
@@ -601,6 +613,72 @@ function MatchConfigFields({ config, onConfigChange }) {
   );
 }
 
+function EnginePlaySettingsFields({ settings, onChange, timedGame = true, disabled = false }) {
+  const cleanSettings = sanitizePlayEngineSettings(settings);
+  const activeTimeBudgetMs = timedGame ? cleanSettings.timedTimeBudgetMs : cleanSettings.untimedTimeBudgetMs;
+
+  return (
+    <div style={{ display: "grid", gap: 12, padding: "14px 15px", borderRadius: 14, border: "1px solid #211a11", background: "#0f151c" }}>
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <div style={labelStyle()}>Engine Depth</div>
+          <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d4c08f" }}>{cleanSettings.maxDepth}</div>
+        </div>
+        <input
+          type="range"
+          min={ENGINE_DEPTH_MIN}
+          max={ENGINE_DEPTH_MAX}
+          step={1}
+          value={cleanSettings.maxDepth}
+          disabled={disabled}
+          onChange={(event) => onChange({
+            ...cleanSettings,
+            maxDepth: Number(event.target.value),
+          })}
+          style={{ width: "100%" }}
+        />
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontFamily: "'DM Sans'", fontSize: 10, color: "#7c6841", marginTop: 6 }}>
+          <span>{ENGINE_DEPTH_MIN}</span>
+          <span>{Math.round((ENGINE_DEPTH_MIN + ENGINE_DEPTH_MAX) / 2)}</span>
+          <span>{ENGINE_DEPTH_MAX}</span>
+        </div>
+      </div>
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <div style={labelStyle()}>{timedGame ? "Timed Search" : "Untimed Search"}</div>
+          <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d4c08f" }}>{formatMilliseconds(activeTimeBudgetMs)}</div>
+        </div>
+        <input
+          type="range"
+          min={ENGINE_TIME_BUDGET_MIN_MS}
+          max={ENGINE_TIME_BUDGET_MAX_MS}
+          step={5}
+          value={activeTimeBudgetMs}
+          disabled={disabled}
+          onChange={(event) => onChange(timedGame ? {
+            ...cleanSettings,
+            timedTimeBudgetMs: Number(event.target.value),
+          } : {
+            ...cleanSettings,
+            untimedTimeBudgetMs: Number(event.target.value),
+          })}
+          style={{ width: "100%" }}
+        />
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontFamily: "'DM Sans'", fontSize: 10, color: "#7c6841", marginTop: 6 }}>
+          <span>{formatMilliseconds(ENGINE_TIME_BUDGET_MIN_MS)}</span>
+          <span>{formatMilliseconds(Math.round((ENGINE_TIME_BUDGET_MIN_MS + ENGINE_TIME_BUDGET_MAX_MS) / 2))}</span>
+          <span>{formatMilliseconds(ENGINE_TIME_BUDGET_MAX_MS)}</span>
+        </div>
+      </div>
+      {infoText(
+        timedGame
+          ? "These values affect the remote engine search used for local engine matches with a running match clock."
+          : "These values affect the remote engine search used for local engine matches without a match clock.",
+      )}
+    </div>
+  );
+}
+
 function VisibilityField({ value, onChange, helpText }) {
   return (
     <div>
@@ -614,16 +692,50 @@ function VisibilityField({ value, onChange, helpText }) {
   );
 }
 
-function CreateRoomModal({ open, onClose, createConfig, createPublicVisible, onConfigChange, onCreatePublicVisibleChange, onCreatePublic, onStartLocal, onStartEngine }) {
+function CreateRoomModal({
+  open,
+  onClose,
+  createConfig,
+  engineSettings,
+  engineCapabilities,
+  engineHealthStatus,
+  engineHealthMessage,
+  createPublicVisible,
+  onConfigChange,
+  onEngineSettingsChange,
+  onCreatePublicVisibleChange,
+  onCreatePublic,
+  onStartLocal,
+  onStartEngine,
+}) {
+  const cleanConfig = sanitizeConfig(createConfig);
+  const engineSupported = supportsEngineBoardSize(engineCapabilities, cleanConfig.boardSize);
+  const supportedBoardSizesLabel = formatSupportedBoardSizes(engineCapabilities);
+  let engineNotice = "";
+  if (engineHealthStatus === "loading" || engineHealthStatus === "refreshing") {
+    engineNotice = "Checking remote engine capabilities...";
+  } else if (engineHealthStatus === "error") {
+    engineNotice = engineHealthMessage || "The engine service is currently unavailable.";
+  } else if (!engineSupported) {
+    engineNotice = `The current Python-backed hd engine supports ${supportedBoardSizesLabel} only. Switch the board size to one of those sizes to start an engine match.`;
+  }
+
   return (
     <ModalShell open={open} onClose={onClose} title="Create Room" sub="Configure the board once, then start an online room, a local practice board, or a local engine match.">
-      <MatchConfigFields config={createConfig} onConfigChange={(nextConfig) => onConfigChange(sanitizeConfig(nextConfig))} />
+      <MatchConfigFields config={cleanConfig} onConfigChange={(nextConfig) => onConfigChange(sanitizeConfig(nextConfig))} />
+      <EnginePlaySettingsFields
+        settings={engineSettings}
+        timedGame={cleanConfig.baseSeconds !== null}
+        disabled={!engineSupported}
+        onChange={(nextSettings) => onEngineSettingsChange(sanitizePlayEngineSettings(nextSettings))}
+      />
       <VisibilityField value={createPublicVisible} onChange={onCreatePublicVisibleChange} helpText="Visible rooms show up in the public room browser while waiting, and started games can be watched." />
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="hub-btn" onClick={onCreatePublic} style={solidButton(false)}>Create Online Room</button>
         <button className="ghost-btn" onClick={onStartLocal} style={ghostButton(false)}>Local Practice</button>
-        <button className="ghost-btn" onClick={onStartEngine} style={ghostButton(false)}>Player vs hd(early access)</button>
+        <button className="ghost-btn" onClick={onStartEngine} disabled={!engineSupported || engineHealthStatus !== "ready"} style={ghostButton(!engineSupported || engineHealthStatus !== "ready")}>Player vs hd</button>
       </div>
+      {engineNotice ? infoText(engineNotice, engineHealthStatus === "error" ? "#c78d6b" : "#6f5d3b") : null}
     </ModalShell>
   );
 }
@@ -985,8 +1097,13 @@ export function HallPage(props) {
     onRoomCodeChange,
     onJoinByCode,
     createConfig,
+    engineSettings,
+    engineCapabilities,
+    engineHealthStatus,
+    engineHealthMessage,
     createPublicVisible,
     onConfigChange,
+    onEngineSettingsChange,
     onCreatePublicVisibleChange,
     onCreatePublic,
     onOpenRoom,
@@ -1052,7 +1169,7 @@ export function HallPage(props) {
         </Section>
       </div>
 
-      <CreateRoomModal open={activePanel === "create"} onClose={() => setActivePanel(null)} createConfig={sanitizeConfig(createConfig)} createPublicVisible={createPublicVisible} onConfigChange={onConfigChange} onCreatePublicVisibleChange={onCreatePublicVisibleChange} onCreatePublic={onCreatePublic} onStartLocal={onStartLocal} onStartEngine={onStartEngine} />
+      <CreateRoomModal open={activePanel === "create"} onClose={() => setActivePanel(null)} createConfig={sanitizeConfig(createConfig)} engineSettings={engineSettings} engineCapabilities={engineCapabilities} engineHealthStatus={engineHealthStatus} engineHealthMessage={engineHealthMessage} createPublicVisible={createPublicVisible} onConfigChange={onConfigChange} onEngineSettingsChange={onEngineSettingsChange} onCreatePublicVisibleChange={onCreatePublicVisibleChange} onCreatePublic={onCreatePublic} onStartLocal={onStartLocal} onStartEngine={onStartEngine} />
       <JoinCodeModal open={activePanel === "code"} onClose={() => setActivePanel(null)} roomCode={roomCode} onRoomCodeChange={onRoomCodeChange} onJoinByCode={onJoinByCode} />
       <RoomBrowserModal open={activePanel === "public"} onClose={() => setActivePanel(null)} title="Public Rooms" sub="Visible waiting rooms and active games both appear here. Join an open seat, or spectate a game already in progress." rooms={rooms.publicRooms} emptyText="The public hall is quiet right now." actionLabel={(room) => room.canJoin ? "Join" : room.canSpectate ? "Spectate" : null} onAction={onOpenRoom} />
       <RoomBrowserModal open={activePanel === "invites"} onClose={() => setActivePanel(null)} title="Pending Invites" sub="These rooms were created specifically for this account or guest session." rooms={rooms.invites} emptyText="No direct challenges are waiting for you right now." actionLabel={() => "Join"} onAction={onOpenRoom} />

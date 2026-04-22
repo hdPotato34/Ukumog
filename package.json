@@ -11,8 +11,16 @@
     "build:app": "node scripts/build.mjs",
     "desktop": "npm run build:app && electron .",
     "server": "node server.mjs",
-    "test:engine-gameplay": "node scripts/engine-gameplay-regression.mjs",
-    "test:engine-tactics": "node scripts/engine-tactics-regression.mjs",
+    "test:engine-contract": "node scripts/engine-contract-smoke.mjs",
+    "test:engine-preflight": "npm run build:app && npm run test:rules-compare && npm run test:engine-contract && npm run test:engine-smoke && npm run test:review-smoke",
+    "test:engine-smoke": "node scripts/engine-smoke.mjs",
+    "test:review-smoke": "node scripts/review-smoke.mjs",
+    "test:rules-compare": "node scripts/compare_rules.mjs",
+    "release:docker:verify": "node scripts/release-docker.mjs verify",
+    "release:docker:build": "node scripts/release-docker.mjs build",
+    "release:docker:smoke": "node scripts/release-docker.mjs smoke",
+    "release:docker:save": "node scripts/release-docker.mjs save",
+    "release:docker:package": "node scripts/release-docker.mjs package",
     "dist": "npm run build:app && electron-builder --win nsis"
   },
   "dependencies": {

@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from schemas import EngineAnalysisResponse, EngineHealthResponse, EngineRequest
-from ukumog_adapter import BACKEND_NAME, EngineAdapterError, get_engine_version, run_engine_analysis
+from ukumog_adapter import BACKEND_NAME, EngineAdapterError, get_engine_capabilities, get_engine_version, run_engine_analysis
 
 logger = logging.getLogger("ukumog-serving")
 
@@ -60,6 +60,7 @@ async def health() -> EngineHealthResponse:
         backend=BACKEND_NAME,
         engineVersion=get_engine_version(),
         pythonVersion=sys.version.split()[0],
+        capabilities=get_engine_capabilities(),
     )
 
 

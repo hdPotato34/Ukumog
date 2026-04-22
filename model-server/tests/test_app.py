@@ -18,19 +18,19 @@ for path in (str(SERVING_DIR), str(UKUMOG_DIR)):
 import app as app_module
 
 
-def empty_board() -> list[list[None]]:
-    return [[None for _ in range(11)] for _ in range(11)]
+def empty_board(board_size: int = 11) -> list[list[None]]:
+    return [[None for _ in range(board_size)] for _ in range(board_size)]
 
 
-def valid_payload() -> dict[str, object]:
+def valid_payload(board_size: int = 11) -> dict[str, object]:
     return {
         "state": {
-            "board": empty_board(),
+            "board": empty_board(board_size),
             "turn": "B",
             "result": None,
         },
         "config": {
-            "boardSize": 11,
+            "boardSize": board_size,
         },
         "timeBudgetMs": 100,
         "maxDepth": 1,
@@ -49,6 +49,11 @@ class UkumogAppTests(unittest.TestCase):
         self.assertEqual(payload["backend"], "ukumog")
         self.assertTrue(payload["engineVersion"])
         self.assertTrue(payload["pythonVersion"])
+        self.assertEqual(payload["capabilities"]["supportedBoardSizes"], [9, 11, 13, 15])
+        self.assertEqual(payload["capabilities"]["timeBudgetMs"]["min"], 25)
+        self.assertEqual(payload["capabilities"]["timeBudgetMs"]["max"], 5000)
+        self.assertEqual(payload["capabilities"]["maxDepth"]["min"], 1)
+        self.assertEqual(payload["capabilities"]["maxDepth"]["max"], 12)
 
     def test_search_returns_standardized_payload(self) -> None:
         response = self.client.post("/search", json=valid_payload())
@@ -58,6 +63,14 @@ class UkumogAppTests(unittest.TestCase):
         self.assertEqual(payload["bestMove"]["row"], 5)
         self.assertEqual(payload["bestMove"]["col"], 5)
         self.assertEqual(payload["bestMove"]["notation"], "F6")
+
+    def test_search_supports_nine_board_payload(self) -> None:
+        response = self.client.post("/search", json=valid_payload(9))
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["bestMove"]["row"], 4)
+        self.assertEqual(payload["bestMove"]["col"], 4)
+        self.assertEqual(payload["bestMove"]["notation"], "E5")
 
     def test_analyze_returns_standardized_payload(self) -> None:
         response = self.client.post("/analyze", json=valid_payload())
@@ -80,8 +93,7 @@ class UkumogAppTests(unittest.TestCase):
         })
 
     def test_unsupported_board_size_returns_specific_error(self) -> None:
-        payload = valid_payload()
-        payload["config"]["boardSize"] = 9
+        payload = valid_payload(10)
         response = self.client.post("/search", json=payload)
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["code"], "unsupported_board_size")

@@ -39,12 +39,13 @@ def _has_pattern_through_move(bits: int, move: int, length: int, board_size: int
 
 
 def brute_force_move_result(position: Position, move: int, board_size: int = BOARD_SIZE) -> MoveResult:
+    resolved_board_size = position.board_size if board_size == BOARD_SIZE and position.board_size != BOARD_SIZE else board_size
     if not position.is_empty(move):
         raise ValueError(f"illegal move on occupied or invalid cell: {move}")
 
     mover_bits = position.current_bits() | bit(move)
-    if _has_pattern_through_move(mover_bits, move, 5, board_size):
+    if _has_pattern_through_move(mover_bits, move, 5, resolved_board_size):
         return MoveResult.WIN
-    if _has_pattern_through_move(mover_bits, move, 4, board_size):
+    if _has_pattern_through_move(mover_bits, move, 4, resolved_board_size):
         return MoveResult.LOSS
     return MoveResult.NONTERMINAL

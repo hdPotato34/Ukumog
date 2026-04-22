@@ -1,232 +1,276 @@
-# 模型端目录规划（训练与推理）
+# Ukumog Engine 服务接入说明
 
-Last updated: 2026-04-15
+Last updated: `2026-04-21`
 
-## 目标
+## 当前定位
 
-在当前仓库内预留一个可独立演进的模型端工作区，用于：
+`model-server/` 现在的主要职责不是训练流水线，而是给应用端提供一个可直接联调的 `ukumog-engine` HTTP 服务层。
 
-- 训练数据处理
-- 模型训练与评估
-- 模型导出与注册
-- 推理服务代码
-
-该目录先做结构与规范，不与线上对局服务强耦合。
-
----
-
-## 目录结构
+当前应用端 AI 主链路已经收口为：
 
 ```text
-model-server/
-  src/
-  configs/
-  scripts/
-  data/
-    raw/
-    processed/
-    features/
-  artifacts/
-    checkpoints/
-    eval/
-    exports/
-    runs/
-  registry/
-  docs/
+React / RemoteEngineClient
+  -> server.mjs (/api/engine/*)
+    -> model-server FastAPI service
+      -> ukumog-engine
 ```
 
----
+这条链路已经是当前唯一主线。旧的本地 JS 搜索、opening book、worker 搜索逻辑不再是运行时主实现。
 
-## 各目录放什么
+## 当前覆盖范围
 
-### src/
+已提供的能力：
 
-放模型端源码（建议按模块继续拆分）：
+- `GET /health`
+- `POST /search`
+- `POST /analyze`
 
-- data_pipeline（清洗与编码）
-- training（训练主循环）
-- selfplay（自博弈）
-- evaluation（对战评测与战术题）
-- serving（推理接口）
+当前明确限制：
 
-### configs/
+- 支持 `9 / 11 / 13 / 15`
+- 不提供 `/cancel`
+- Python 服务层本身不做复杂会话管理
+- Node 代理层负责同源转发、超时保护、单活请求策略和错误整形
 
-放所有可复现配置：
+## 目录说明
 
-- 训练配置（模型结构、超参、batch、lr）
-- 自博弈配置（MCTS sims、温度、噪声）
-- 评测配置（对手、局数、门禁阈值）
-- 推理配置（超时、回退策略）
-
-### scripts/
-
-放运维和流水线脚本：
-
-- 数据同步脚本（从线上拉取 finished games）
-- 启动训练脚本
-- 批量评测脚本
-- 导出和注册脚本
-
-### data/raw/
-
-放从线上同步来的原始对局数据。
-
-要求：
-
-- 只追加，不覆盖
-- 保留同步批次信息
-- 原则上只读
-
-### data/processed/
-
-放训练样本（由 raw 生成）：
-
-- 状态编码
-- policy/value 标签
-- train/val 划分后的数据分片
-
-### data/features/
-
-放可复用特征缓存：
-
-- 局面哈希
-- 预计算合法手 mask
-- 其它中间特征
-
-### artifacts/checkpoints/
-
-放训练过程中的权重文件：
-
-- 按 run_id 和 step 管理
-- 禁止覆盖历史 checkpoint
-
-### artifacts/eval/
-
-放评测输出：
-
-- 对战胜率报告
-- 战术题报告
-- 推理时延/超时统计
-
-### artifacts/exports/
-
-放可部署模型导出物：
-
-- onnx 或 torchscript
-- 对应 inference_config
-- 版本说明
-
-### artifacts/runs/
-
-放实验运行日志：
-
-- 控制台日志
-- loss 曲线
-- 关键指标快照
-
-### registry/
-
-放模型注册表：
-
-- 当前生产模型
-- 候选模型
-- 回滚模型
-- 门禁阈值
-
-### docs/
-
-放模型端内部文档：
-
-- 训练流程说明
-- 上线与回滚手册
-- 故障排查清单
-
----
-
-## 命名与版本建议
-
-- run_id: ag_train_YYYYMMDD_HHMM_<shortgit>
-- model_version: ag-az-YYYYMMDD-rN
-- dataset_version: ds-YYYYMMDD-batchN
-
----
-
-## 入库与不入库建议
-
-建议入库：
-
-- src/
-- configs/
-- scripts/
-- docs/
-- registry/（可只入模板）
-
-建议不入库（或只保留占位文件）：
-
-- data/raw/
-- data/processed/
-- data/features/
-- artifacts/checkpoints/
-- artifacts/runs/
-
-可按后续需要补充 model-server/.gitignore。
-
----
-
-## 下一步
-
-1. 在 src/ 下初始化最小训练骨架（data -> train -> eval -> export）。
-2. 在 scripts/ 下补齐一键训练与一键评测脚本。
-3. 将 model_registry 与训练配置模板迁入 model-server 目录并统一引用路径。
----
-
-## Serving MVP
-
-当前仓库已经补上一个最小可运行的 `ukumog-engine` HTTP 服务骨架，代码位于：
+当前真正参与联调的目录主要是：
 
 - `model-server/src/serving/`
+  FastAPI 服务入口、schema、`ukumog-engine` 适配层
+- `model-server/tests/`
+  服务层与适配层测试
+- `model-server/docs/`
+  续接清单与接入路径说明
 
-本轮只覆盖：
+## 环境要求
 
-- `/health`
-- `/search`
-- `/analyze`
+- Python `3.11+`
+- Node.js `20+`
+- npm
 
-约束：
+`ukumog-engine/pyproject.toml` 当前正式要求是 `requires-python = ">=3.11"`，所以不要把 Python 3.10 当成受支持环境。
 
-- 仅支持 `11x11`
-- 不做 `/cancel`
-- 每个请求新建一个 `SearchEngine()`
+## 本地启动
 
-### Python 环境
+以下步骤默认从仓库根目录 `C:\Fengru Cup\hd` 执行。
 
-建议使用 Python `3.11+`。
-
-从仓库根目录创建独立虚拟环境并安装：
+### 1. 安装 Node 依赖
 
 ```powershell
-python -m venv model-server/.venv
-model-server\.venv\Scripts\python -m pip install -r model-server/requirements-serving.txt
+npm install
+```
+
+### 2. 创建并安装 Python 环境
+
+```powershell
+py -3.11 -m venv model-server\.venv
+model-server\.venv\Scripts\python -m pip install --upgrade pip
+model-server\.venv\Scripts\python -m pip install -r model-server\requirements-serving.txt
 model-server\.venv\Scripts\python -m pip install -e .\ukumog-engine
 ```
 
-### 本地启动
+如果本机没有 `py -3.11`，可以改用你已经安装好的 Python 3.11 可执行文件。
 
-从仓库根目录启动：
+### 3. 启动 Python 引擎服务
 
 ```powershell
-python -m uvicorn app:app --app-dir model-server/src/serving --host 127.0.0.1 --port 8011
+model-server\.venv\Scripts\python -m uvicorn app:app --app-dir model-server/src/serving --host 127.0.0.1 --port 8011
 ```
 
-### 运行测试
+默认服务地址：
+
+```text
+http://127.0.0.1:8011
+```
+
+### 4. 启动应用端 Node 服务
+
+另开一个终端：
+
+```powershell
+npm run build:app
+npm run server
+```
+
+默认应用地址：
+
+```text
+http://127.0.0.1:8787
+```
+
+## 端口与环境变量
+
+### Python 服务
+
+默认：
+
+- Host: `127.0.0.1`
+- Port: `8011`
+
+### Node 服务
+
+默认：
+
+- `PORT=8787`
+- `HOST=0.0.0.0`
+
+### Node -> Python 代理配置
+
+`server.mjs` 当前读取以下环境变量：
+
+- `ENGINE_SERVICE_ORIGIN`
+- `MODEL_SERVER_ORIGIN`
+- `ENGINE_SERVICE_TIMEOUT_MS`
+
+默认值分别是：
+
+```text
+ENGINE_SERVICE_ORIGIN=http://127.0.0.1:8011
+ENGINE_SERVICE_TIMEOUT_MS=15000
+```
+
+示例：
+
+```powershell
+$env:ENGINE_SERVICE_ORIGIN="http://127.0.0.1:8011"
+$env:ENGINE_SERVICE_TIMEOUT_MS="20000"
+npm run server
+```
+
+## 联调自检
+
+### 检查 Python 服务是否正常
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8011/health
+```
+
+期望返回字段包括：
+
+- `ok`
+- `backend`
+- `engineVersion`
+- `pythonVersion`
+
+### 检查 Node 代理是否正常
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8787/api/engine/health
+```
+
+### 检查应用侧回归
+
+```powershell
+npm run test:engine-preflight
+npm run test:engine-smoke
+npm run test:rules-compare
+```
+
+其中 `npm run test:engine-preflight` 会串行执行当前发布前的标准检查：
+
+- `npm run build:app`
+- `npm run test:rules-compare`
+- `npm run test:engine-contract`
+- `npm run test:engine-smoke`
+- `npm run test:review-smoke`
+
+## 测试
+
+Python 服务层测试：
+
+```powershell
+model-server\.venv\Scripts\python -m unittest discover -s model-server/tests -p "test_*.py"
+```
 
 当前测试覆盖：
 
-- 适配层
-- FastAPI 服务层
+- FastAPI `/health` `/search` `/analyze`
+- 请求校验和标准错误码
+- `ukumog-engine` 适配层的局面转换与搜索结果标准化
 
-从仓库根目录运行：
+应用侧联调回归：
 
-```powershell
-python -m unittest discover -s model-server/tests -p "test_*.py"
-```
+- `npm run test:engine-preflight`
+- `npm run test:engine-contract`
+- `npm run test:engine-smoke`
+- `npm run test:rules-compare`
+
+其中：
+
+- `test:engine-preflight` 是当前仓库的统一发布前检查入口，也已接入仓库级 CI
+- `test:engine-contract` 会校验 `RemoteEngineClient -> Node -> Python` 的真实接口契约，并覆盖 opening center、必防、避毒手、双威胁等关键 spot check
+
+## 常见故障
+
+### `engine_unavailable`
+
+表现：
+
+- Node `/api/engine/*` 返回 `503`
+- 前端提示引擎服务不可用
+
+优先检查：
+
+1. Python 服务是否已经启动在 `127.0.0.1:8011`
+2. `ENGINE_SERVICE_ORIGIN` 是否指向正确地址
+3. 本机防火墙或端口占用是否导致请求失败
+
+### `engine_timeout`
+
+表现：
+
+- Node 代理返回 `504`
+- 日志里可见 `code=engine_timeout`
+
+优先检查：
+
+1. Python 服务是否卡死或启动异常
+2. `ENGINE_SERVICE_TIMEOUT_MS` 是否过小
+3. 当前请求深度或时间预算是否不合理
+
+### `unsupported_board_size`
+
+表现：
+
+- `POST /search` 或 `POST /analyze` 返回 `400`
+
+原因：
+
+- 当前远端引擎支持 `9 / 11 / 13 / 15`
+
+说明：
+
+- 这是当前产品限制，不是临时 bug
+
+### Python 版本不对
+
+表现：
+
+- 安装 `ukumog-engine` 失败
+- 运行时出现不受支持的 Python 版本问题
+
+处理：
+
+- 切到 Python `3.11+`
+- 重新创建 `model-server/.venv`
+
+## Docker 与交付范围
+
+当前仓库里的远端引擎链路已经可本地联调，但以下部分还没有收口成完整交付说明：
+
+- Linux x86_64 Docker 服务器发布方案
+- Electron 发行版如何携带或拉起 Python 服务
+- `/cancel` 风格的跨层取消协议
+
+所以当前推荐定位是：
+
+- Web/本地开发联调：已可用
+- 生产级部署编排：仍需单独补文档
+- Electron 打包分发：仍需单列方案
+
+## 相关文档
+
+- `model-server/docs/UKUMOG_ENGINE_BACKEND_INTEGRATION_PATH.md`
+- `model-server/docs/UKUMOG_ENGINE_BACKEND_TASK_LIST.md`
+- `model-server/docs/ELECTRON_ENGINE_DELIVERY_PLAN.md`

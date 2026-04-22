@@ -25,7 +25,16 @@ import {
   replayRecord,
 } from "./game-record.mjs";
 import { copyTextToClipboard } from "./online-room.mjs";
-import { LocalEngineClient } from "./engine/engine-client.mjs";
+import { formatSupportedBoardSizes, supportsEngineBoardSize } from "./engine/engine-capabilities.mjs";
+import { RemoteEngineClient } from "./engine/engine-client.mjs";
+import {
+  ENGINE_DEPTH_MAX,
+  ENGINE_DEPTH_MIN,
+  ENGINE_TIME_BUDGET_MAX_MS,
+  ENGINE_TIME_BUDGET_MIN_MS,
+  sanitizeEngineSettings,
+  sanitizePlayEngineSettings,
+} from "./engine/engine-settings.mjs";
 import { analysisBarPercent, formatAnalysisScore, nextMainlineNodeToAnalyze } from "./review-analysis.mjs";
 
 const BASE_CSS = `@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');*{box-sizing:border-box}button,input{transition:all .15s ease}button,input,textarea{font:inherit}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}.tb-btn:hover:not(:disabled){color:#c8b060!important;border-color:#6a5030!important}.ng-btn:hover:not(:disabled),.start-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}.menu-btn:hover{color:#a89060!important;border-color:#4a3820!important}.panel-input:focus{outline:none;border-color:#8d713e!important;box-shadow:0 0 0 2px rgba(232,201,106,.08)}`;
@@ -865,7 +874,7 @@ function ReviewMoveList({ record, currentNodeId, onJump, analysisByNodeId = {} }
   );
 }
 
-function ReviewAnalysisCard({ analysis, status }) {
+function ReviewAnalysisCard({ analysis, status, message = "" }) {
   const percent = analysisBarPercent(analysis);
   const scoreText = analysis ? formatAnalysisScore(analysis) : status === "loading" ? "Analyzing..." : "N/A";
   const pvText = Array.isArray(analysis?.pv) && analysis.pv.length
@@ -886,6 +895,164 @@ function ReviewAnalysisCard({ analysis, status }) {
           <div>Nodes: {analysis?.nodes ?? "N/A"}</div>
           <div>Time: {typeof analysis?.timeMs === "number" ? `${analysis.timeMs} ms` : "N/A"}</div>
           <div>PV: {pvText}</div>
+          {message ? <div style={{ color: "#c78d6b", marginTop: 6 }}>{message}</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatMilliseconds(value) {
+  return `${Math.round(Number(value) || 0)} ms`;
+}
+
+function EngineRangeField({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  onChange,
+  disabled = false,
+  formatValue = (nextValue) => String(nextValue),
+}) {
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#7b6740" }}>{label}</div>
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#dcc798" }}>{formatValue(value)}</div>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(Number(event.target.value))}
+        style={{ width: "100%" }}
+      />
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 6, fontFamily: "'DM Sans'", fontSize: 10, color: "#7c6841" }}>
+        <span>{formatValue(min)}</span>
+        <span>{formatValue(Math.round((min + max) / 2))}</span>
+        <span>{formatValue(max)}</span>
+      </div>
+    </div>
+  );
+}
+
+function EnginePlaySettingsCard({ settings, timedGame = true, onChange }) {
+  const cleanSettings = sanitizePlayEngineSettings(settings);
+  const activeTimeBudgetMs = timedGame ? cleanSettings.timedTimeBudgetMs : cleanSettings.untimedTimeBudgetMs;
+
+  return (
+    <div style={{ border: "1px solid #2a2018", borderRadius: 10, background: "#11161d", padding: "12px 14px", display: "grid", gap: 12 }}>
+      <div style={{ fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#7b6740" }}>Search Setup</div>
+      <EngineRangeField
+        label="Depth"
+        value={cleanSettings.maxDepth}
+        min={ENGINE_DEPTH_MIN}
+        max={ENGINE_DEPTH_MAX}
+        step={1}
+        onChange={(nextValue) => onChange({
+          ...cleanSettings,
+          maxDepth: nextValue,
+        })}
+      />
+      <EngineRangeField
+        label={timedGame ? "Timed Search" : "Untimed Search"}
+        value={activeTimeBudgetMs}
+        min={ENGINE_TIME_BUDGET_MIN_MS}
+        max={ENGINE_TIME_BUDGET_MAX_MS}
+        step={5}
+        formatValue={formatMilliseconds}
+        onChange={(nextValue) => onChange(timedGame ? {
+          ...cleanSettings,
+          timedTimeBudgetMs: nextValue,
+        } : {
+          ...cleanSettings,
+          untimedTimeBudgetMs: nextValue,
+        })}
+      />
+      <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#8f7d5a", lineHeight: 1.7 }}>
+        {timedGame
+          ? "These values are used for the next engine search while the match clock is running."
+          : "These values are used for the next engine search in untimed engine matches."}
+      </div>
+    </div>
+  );
+}
+
+function ReviewEngineSettingsCard({ settings, onChange }) {
+  const cleanSettings = sanitizeEngineSettings(settings);
+
+  return (
+    <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px", display: "grid", gap: 14 }}>
+      <div style={{ fontSize: 22, color: GOLD }}>Analysis Settings</div>
+      <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ border: "1px solid #2a2018", borderRadius: 12, background: "#0f151c", padding: "12px 14px", display: "grid", gap: 12 }}>
+          <div style={{ fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#7b6740" }}>Current Node</div>
+          <EngineRangeField
+            label="Depth"
+            value={cleanSettings.reviewFocus.maxDepth}
+            min={ENGINE_DEPTH_MIN}
+            max={ENGINE_DEPTH_MAX}
+            step={1}
+            onChange={(nextValue) => onChange({
+              ...cleanSettings,
+              reviewFocus: {
+                ...cleanSettings.reviewFocus,
+                maxDepth: nextValue,
+              },
+            })}
+          />
+          <EngineRangeField
+            label="Thinking Time"
+            value={cleanSettings.reviewFocus.timeBudgetMs}
+            min={ENGINE_TIME_BUDGET_MIN_MS}
+            max={ENGINE_TIME_BUDGET_MAX_MS}
+            step={5}
+            formatValue={formatMilliseconds}
+            onChange={(nextValue) => onChange({
+              ...cleanSettings,
+              reviewFocus: {
+                ...cleanSettings.reviewFocus,
+                timeBudgetMs: nextValue,
+              },
+            })}
+          />
+        </div>
+        <div style={{ border: "1px solid #2a2018", borderRadius: 12, background: "#0f151c", padding: "12px 14px", display: "grid", gap: 12 }}>
+          <div style={{ fontFamily: "'DM Sans'", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#7b6740" }}>Background Prefetch</div>
+          <EngineRangeField
+            label="Depth"
+            value={cleanSettings.reviewBackground.maxDepth}
+            min={ENGINE_DEPTH_MIN}
+            max={ENGINE_DEPTH_MAX}
+            step={1}
+            onChange={(nextValue) => onChange({
+              ...cleanSettings,
+              reviewBackground: {
+                ...cleanSettings.reviewBackground,
+                maxDepth: nextValue,
+              },
+            })}
+          />
+          <EngineRangeField
+            label="Thinking Time"
+            value={cleanSettings.reviewBackground.timeBudgetMs}
+            min={ENGINE_TIME_BUDGET_MIN_MS}
+            max={ENGINE_TIME_BUDGET_MAX_MS}
+            step={5}
+            formatValue={formatMilliseconds}
+            onChange={(nextValue) => onChange({
+              ...cleanSettings,
+              reviewBackground: {
+                ...cleanSettings.reviewBackground,
+                timeBudgetMs: nextValue,
+              },
+            })}
+          />
         </div>
       </div>
     </div>
@@ -1094,11 +1261,12 @@ export function LocalGame({ config, onMenu, onSaveRecord }) {
   return <Shell config={config} state={state} active={state.result ? null : state.turn} canPlace={!state.result} onPlace={place} onBack={onMenu} backLabel="<- Hall" rightLabel="Local" status={<Status state={state} message={`${pName(state.turn)}'s turn`} />} controls={<><button className="tb-btn" onClick={takeback} disabled={!history.length} style={actionBtn("ghost", !history.length)}>Takeback</button><button className="tb-btn" onClick={() => setAnnotationResetToken((token) => token + 1)} style={actionBtn("ghost", false)}>Clear Marks</button><button className="tb-btn" onClick={() => onSaveRecord({ config, moves, state })} disabled={!moves.length} style={actionBtn("ghost", !moves.length)}>Save Record</button><button className="ng-btn" onClick={onMenu} style={actionBtn("solid")}>Leave Practice</button></>} annotationScopeKey={`local-${config.boardSize}`} annotationResetToken={annotationResetToken} />;
 }
 
-export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecord, onReview }) {
+export function EngineGame({ session, engineSettings, onEngineSettingsChange, onMove, onBackToHall, onLeave, onSaveRecord, onReview }) {
   const config = session.config;
   const state = session.gameState || createMatchState(config);
   const canPlace = session.phase === "active" && !state.result && session.engineStatus !== "thinking" && state.turn === session.playerSide;
   const [annotationResetToken, setAnnotationResetToken] = useState(0);
+  const cleanPlaySettings = sanitizePlayEngineSettings(session.engineSettings || engineSettings);
   const playerLabel = session.playerSide === "B" ? "You are Black" : "You are White";
   const engineLabel = session.engineSide === "B" ? "Engine plays Black" : "Engine plays White";
   const scoreLabel = session.analysis?.mate
@@ -1175,6 +1343,11 @@ export function EngineGame({ session, onMove, onBackToHall, onLeave, onSaveRecor
               <div>At: {debug?.appliedAt || debug?.scheduledAt || "N/A"}</div>
             </div>
           </div>
+          <EnginePlaySettingsCard
+            settings={cleanPlaySettings}
+            timedGame={config.baseSeconds !== null}
+            onChange={onEngineSettingsChange}
+          />
         </div>
       )}
     />
@@ -1265,7 +1438,18 @@ export function OnlineGame({ session, shareLink, inviteCopied, onCopyInvite, onM
   );
 }
 
-export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSaveRecord }) {
+export function ReviewGame({
+  record,
+  currentNodeId,
+  sessionTokenRef,
+  engineSettings,
+  engineCapabilities,
+  engineHealthMessage,
+  onEngineSettingsChange,
+  onBack,
+  onChangeRecord,
+  onSaveRecord,
+}) {
   const [activeNodeId, setActiveNodeId] = useState(() => currentNodeId || findDeepestMainlineNode(record));
   const [feedback, setFeedback] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -1275,8 +1459,11 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   const [annotationResetToken, setAnnotationResetToken] = useState(0);
   const [analysisByNodeId, setAnalysisByNodeId] = useState({});
   const [analysisStatusByNodeId, setAnalysisStatusByNodeId] = useState({});
+  const [analysisMessageByNodeId, setAnalysisMessageByNodeId] = useState({});
   const focusEngineRef = useRef(null);
   const backgroundEngineRef = useRef(null);
+  const remoteAnalysisSupported = supportsEngineBoardSize(engineCapabilities, record.config.boardSize);
+  const cleanEngineSettings = sanitizeEngineSettings(engineSettings);
 
   useEffect(() => {
     if (!feedback) return undefined;
@@ -1290,16 +1477,28 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
     setAnnotationResetToken(0);
     setAnalysisByNodeId({});
     setAnalysisStatusByNodeId({});
+    setAnalysisMessageByNodeId({});
   }, [record, currentNodeId]);
 
   useEffect(() => {
+    setAnalysisByNodeId({});
+    setAnalysisStatusByNodeId({});
+    setAnalysisMessageByNodeId({});
+  }, [
+    remoteAnalysisSupported,
+    engineHealthMessage,
+    cleanEngineSettings.reviewFocus.timeBudgetMs,
+    cleanEngineSettings.reviewFocus.maxDepth,
+    cleanEngineSettings.reviewBackground.timeBudgetMs,
+    cleanEngineSettings.reviewBackground.maxDepth,
+  ]);
+
+  useEffect(() => {
     if (!focusEngineRef.current) {
-      focusEngineRef.current = new LocalEngineClient();
+      focusEngineRef.current = new RemoteEngineClient({
+        getSessionToken: () => sessionTokenRef?.current || "",
+      });
       void focusEngineRef.current.init().catch(() => {});
-    }
-    if (!backgroundEngineRef.current) {
-      backgroundEngineRef.current = new LocalEngineClient();
-      void backgroundEngineRef.current.init().catch(() => {});
     }
     return () => {
       focusEngineRef.current?.dispose();
@@ -1307,7 +1506,27 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
       focusEngineRef.current = null;
       backgroundEngineRef.current = null;
     };
-  }, []);
+  }, [sessionTokenRef]);
+
+  useEffect(() => {
+    if (!remoteAnalysisSupported) {
+      backgroundEngineRef.current?.dispose();
+      backgroundEngineRef.current = null;
+      return undefined;
+    }
+
+    if (!backgroundEngineRef.current) {
+      backgroundEngineRef.current = new RemoteEngineClient({
+        getSessionToken: () => sessionTokenRef?.current || "",
+      });
+      void backgroundEngineRef.current.init().catch(() => {});
+    }
+
+    return () => {
+      backgroundEngineRef.current?.dispose();
+      backgroundEngineRef.current = null;
+    };
+  }, [remoteAnalysisSupported]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -1357,33 +1576,61 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   }, [record, activeNodeId]);
 
   useEffect(() => {
-    if (!focusEngineRef.current || analysisByNodeId[activeNodeId] || analysisStatusByNodeId[activeNodeId] === "loading") {
+    const activeStatus = analysisStatusByNodeId[activeNodeId];
+    if (!focusEngineRef.current || analysisByNodeId[activeNodeId] || (activeStatus && activeStatus !== "idle")) {
+      return undefined;
+    }
+
+    if (!remoteAnalysisSupported) {
+      setAnalysisStatusByNodeId((prev) => ({ ...prev, [activeNodeId]: "error" }));
+      setAnalysisMessageByNodeId((prev) => ({
+        ...prev,
+        [activeNodeId]: engineHealthMessage
+          || `Ukumog engine currently supports ${formatSupportedBoardSizes(engineCapabilities)} review analysis only.`,
+      }));
+      return undefined;
+    }
+
+    if (!sessionTokenRef?.current) {
+      setAnalysisStatusByNodeId((prev) => ({ ...prev, [activeNodeId]: "error" }));
+      setAnalysisMessageByNodeId((prev) => ({
+        ...prev,
+        [activeNodeId]: "An active session is required before the review engine can analyze this position.",
+      }));
       return undefined;
     }
 
     const replay = replayRecord(record, activeNodeId);
     let cancelled = false;
     setAnalysisStatusByNodeId((prev) => ({ ...prev, [activeNodeId]: "loading" }));
+    setAnalysisMessageByNodeId((prev) => ({ ...prev, [activeNodeId]: "" }));
 
     void focusEngineRef.current.analyzePosition({
       state: replay.state,
       config: record.config,
-      timeBudgetMs: 220,
-      maxDepth: 5,
+      timeBudgetMs: cleanEngineSettings.reviewFocus.timeBudgetMs,
+      maxDepth: cleanEngineSettings.reviewFocus.maxDepth,
     }).then((analysis) => {
       if (cancelled) return;
       setAnalysisByNodeId((prev) => ({ ...prev, [activeNodeId]: analysis }));
       setAnalysisStatusByNodeId((prev) => ({ ...prev, [activeNodeId]: "ready" }));
-    }).catch(() => {
+      setAnalysisMessageByNodeId((prev) => ({ ...prev, [activeNodeId]: "" }));
+    }).catch((error) => {
       if (cancelled) return;
       setAnalysisStatusByNodeId((prev) => ({ ...prev, [activeNodeId]: "error" }));
+      setAnalysisMessageByNodeId((prev) => ({
+        ...prev,
+        [activeNodeId]: error instanceof Error && error.message
+          ? error.message
+          : "The remote engine could not analyze this position right now.",
+      }));
     });
 
     return () => {
       cancelled = true;
       void focusEngineRef.current?.cancel().catch(() => {});
     };
-  }, [record, activeNodeId, analysisByNodeId, analysisStatusByNodeId]);
+  }, [record, activeNodeId, analysisByNodeId, analysisStatusByNodeId, remoteAnalysisSupported, sessionTokenRef, cleanEngineSettings.reviewFocus.timeBudgetMs, cleanEngineSettings.reviewFocus.maxDepth, engineHealthMessage, engineCapabilities]);
 
   const replay = replayRecord(record, activeNodeId);
   const path = getNodePath(record, activeNodeId);
@@ -1394,10 +1641,18 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   const nextBranchNodeId = cycleBranchNode(record, activeNodeId, 1);
   const currentAnalysis = analysisByNodeId[activeNodeId] || null;
   const currentAnalysisStatus = analysisStatusByNodeId[activeNodeId] || "idle";
+  const currentAnalysisMessage = analysisMessageByNodeId[activeNodeId] || "";
   const nextBackgroundNodeId = nextMainlineNodeToAnalyze(record, analysisByNodeId, analysisStatusByNodeId, activeNodeId);
 
   useEffect(() => {
-    if (!backgroundEngineRef.current || !nextBackgroundNodeId) {
+    const nextBackgroundStatus = nextBackgroundNodeId ? analysisStatusByNodeId[nextBackgroundNodeId] : "";
+    if (
+      !remoteAnalysisSupported
+      || !backgroundEngineRef.current
+      || !nextBackgroundNodeId
+      || currentAnalysisStatus !== "ready"
+      || (nextBackgroundStatus && nextBackgroundStatus !== "idle")
+    ) {
       return undefined;
     }
 
@@ -1408,8 +1663,8 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
     void backgroundEngineRef.current.analyzePosition({
       state: replayForBackground.state,
       config: record.config,
-      timeBudgetMs: 140,
-      maxDepth: 4,
+      timeBudgetMs: cleanEngineSettings.reviewBackground.timeBudgetMs,
+      maxDepth: cleanEngineSettings.reviewBackground.maxDepth,
     }).then((analysis) => {
       if (cancelled) return;
       setAnalysisByNodeId((prev) => ({ ...prev, [nextBackgroundNodeId]: analysis }));
@@ -1423,7 +1678,7 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
       cancelled = true;
       void backgroundEngineRef.current?.cancel().catch(() => {});
     };
-  }, [record, nextBackgroundNodeId]);
+  }, [record, nextBackgroundNodeId, remoteAnalysisSupported, analysisStatusByNodeId, currentAnalysisStatus, sessionTokenRef, cleanEngineSettings.reviewBackground.timeBudgetMs, cleanEngineSettings.reviewBackground.maxDepth]);
 
   const persistRecord = async (nextRecord, message, nextNodeId = activeNodeId) => {
     const saved = await onSaveRecord(nextRecord);
@@ -1545,7 +1800,8 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
               <div style={{ fontSize: 22, color: GOLD, marginBottom: 10 }}>Branches</div>
               <ReviewBranchPanel record={record} currentNodeId={activeNodeId} onJump={setActiveNodeId} />
             </div>
-            <ReviewAnalysisCard analysis={currentAnalysis} status={currentAnalysisStatus} />
+            <ReviewEngineSettingsCard settings={cleanEngineSettings} onChange={onEngineSettingsChange} />
+            <ReviewAnalysisCard analysis={currentAnalysis} status={currentAnalysisStatus} message={currentAnalysisMessage} />
             <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px" }}>
               <div style={{ fontSize: 22, color: GOLD, marginBottom: 10 }}>Current Position</div>
               <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#d2bd92", lineHeight: 1.8 }}>

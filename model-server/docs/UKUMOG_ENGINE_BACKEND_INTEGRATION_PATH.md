@@ -4,7 +4,7 @@ Last updated: `2026-04-20`
 
 ## 1. 目标
 
-在尽可能不改动现有前端页面、状态机和交互体验的前提下，用 `ukumog-engine` 替换当前前端内的偏 mock 本地引擎实现。
+在尽可能不改动现有前端页面、状态机和交互体验的前提下，用 `ukumog-engine` 替换当前应用端曾经使用的本地 JS 引擎实现。
 
 这里的“尽可能不改前端”具体指：
 
@@ -14,7 +14,7 @@ Last updated: `2026-04-20`
 - 保留前端最终用 `game-core.mjs` 做落子合法性和结果确认
 - 只在“引擎客户端层”与少量能力开关上做必要修改
 
-最终目标是把引擎能力迁到后端，同时让前端仍然消费一个接近现有 `LocalEngineClient` 的 Promise 风格接口。
+最终目标是把引擎能力迁到后端，同时让前端仍然消费一个稳定的 Promise 风格 `EngineClient` 接口。
 
 ---
 
@@ -28,7 +28,7 @@ Last updated: `2026-04-20`
   - 通过 `EngineGameplayRunner` 触发 `searchMove`
   - 用返回的 `bestMove / pv / score / mate` 更新本地 engine-room 会话
 - `game-ui.jsx`
-  - review 页面通过 `LocalEngineClient.analyzePosition()` 获取单节点分析
+  - review 页面通过远端 `EngineClient.analyzePosition()` 获取单节点分析
   - 通过 `cancel()` 取消过期分析请求
 
 真正被前端消费的引擎契约是：
@@ -216,8 +216,8 @@ React / EngineClient
 
 第一阶段建议只改这些地方：
 
-- 把 `LocalEngineClient` 改成“可配置 transport 的 EngineClient”
-- 新增远端 transport，默认走 `/api/engine/*`
+- 统一使用远端 `EngineClient`
+- 默认走 `/api/engine/*`
 - 对 `boardSize !== 11` 做能力开关
 - 在 engine/review UI 中显示后端不可用或不支持时的友好提示
 
@@ -344,7 +344,7 @@ React / EngineClient
 
 - 明确第一阶段只支持 `11x11`
 - 明确前端保留 `EngineGameplayRunner` / review 分析逻辑
-- 明确返回契约以当前 `LocalEngineClient` 形态为准
+- 明确返回契约以前端当前 `EngineClient` 形态为准
 
 验收：
 
@@ -406,7 +406,7 @@ React / EngineClient
 并发建议：
 
 - 单请求同步搜索即可
-- 若后续并发升高，再增加 worker 进程池
+- 若后续并发升高，再增加受控进程池
 
 验收：
 
@@ -451,9 +451,8 @@ Node 侧职责：
 
 建议做法：
 
-1. 把 `LocalEngineClient` 重构成通用 `EngineClient`
-2. 保留原 worker transport 作为 fallback 或开发选项
-3. 新增 remote transport，默认调用：
+1. 统一使用远端 `EngineClient`
+2. 通过同源 API 调用：
    - `/api/engine/search`
    - `/api/engine/analyze`
 
@@ -472,7 +471,7 @@ Node 侧职责：
 验收：
 
 - 页面行为与当前几乎一致
-- 只是结果来源从 worker 变为后端
+- 只是结果来源统一为后端 `ukumog-engine`
 
 ## Phase 5：先打通 engine-room，再打通 review
 
@@ -488,8 +487,8 @@ Node 侧职责：
 建议顺序：
 
 1. engine-room 先切到后端引擎
-2. review 页面保留旧 worker 分析或暂时关闭
-3. engine-room 稳定后，再把 review 分析切过去
+2. review 当前节点分析切过去
+3. engine-room 稳定后，再把 review 背景补分析切过去
 
 review 切换时要额外处理：
 
@@ -573,7 +572,7 @@ review 切换时要额外处理：
 即使后端返回一步棋，前端仍然必须：
 
 - 用 `applyMove()` 再走一次
-- 非法则报错并 fallback
+- 非法则报错并中止该次应用
 
 原因：
 

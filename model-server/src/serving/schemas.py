@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-SUPPORTED_BOARD_SIZE = 11
+SUPPORTED_BOARD_SIZES = (9, 11, 13, 15)
 
 
 class EngineState(BaseModel):
@@ -18,11 +18,11 @@ class EngineState(BaseModel):
 
     @model_validator(mode="after")
     def validate_shape(self) -> "EngineState":
-        if len(self.board) != SUPPORTED_BOARD_SIZE:
-            raise ValueError(f"board must contain {SUPPORTED_BOARD_SIZE} rows")
+        if not self.board:
+            raise ValueError("board must contain at least one row")
         for row in self.board:
-            if len(row) != SUPPORTED_BOARD_SIZE:
-                raise ValueError(f"each board row must contain {SUPPORTED_BOARD_SIZE} cells")
+            if len(row) != len(self.board):
+                raise ValueError("board must be square")
         if self.last is not None and len(self.last) != 2:
             raise ValueError("last must contain exactly two coordinates when provided")
         return self
@@ -41,6 +41,16 @@ class EngineRequest(BaseModel):
     config: EngineConfig
     timeBudgetMs: int = Field(..., gt=0, strict=True)
     maxDepth: int = Field(..., gt=0, strict=True)
+
+    @model_validator(mode="after")
+    def validate_board_shape_matches_config(self) -> "EngineRequest":
+        board_size = int(self.config.boardSize)
+        if len(self.state.board) != board_size:
+            raise ValueError(f"board must contain {board_size} rows")
+        for row in self.state.board:
+            if len(row) != board_size:
+                raise ValueError(f"each board row must contain {board_size} cells")
+        return self
 
 
 class EngineMovePayload(BaseModel):
@@ -61,8 +71,20 @@ class EngineAnalysisResponse(BaseModel):
     backend: str
 
 
+class EngineRangeCapability(BaseModel):
+    min: int
+    max: int
+
+
+class EngineCapabilities(BaseModel):
+    supportedBoardSizes: list[int]
+    timeBudgetMs: EngineRangeCapability
+    maxDepth: EngineRangeCapability
+
+
 class EngineHealthResponse(BaseModel):
     ok: bool
     backend: str
     engineVersion: str
     pythonVersion: str
+    capabilities: EngineCapabilities

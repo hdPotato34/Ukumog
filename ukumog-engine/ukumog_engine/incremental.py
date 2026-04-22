@@ -214,6 +214,7 @@ class IncrementalState:
             black_bits=self.black_bits,
             white_bits=self.white_bits,
             side_to_move=self.side_to_move,
+            board_size=self.tables.board_size,
         )
 
     def absolute_lookup_score(self) -> int:

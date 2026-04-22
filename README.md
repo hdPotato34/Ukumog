@@ -1,6 +1,6 @@
 # Anti-Gomoku Online
 
-Last updated: `2026-04-13`
+Last updated: `2026-04-21`
 
 ## Overview
 
@@ -10,9 +10,16 @@ Current shape of the project:
 
 - One Node.js HTTP/HTTPS server serves both static assets and online match APIs.
 - One React single-page frontend drives the hall, profile, room, and review flows.
+- One Python `model-server` wraps `ukumog-engine` for engine-room and review AI.
 - One optional Electron shell runs the same app as a desktop build.
 
 Online play currently uses `HTTP + polling`. It does not use WebSocket yet.
+
+AI-related flows now use the remote backend chain:
+
+```text
+React -> RemoteEngineClient -> server.mjs (/api/engine/*) -> model-server -> ukumog-engine
+```
 
 ## Current Features
 
@@ -128,12 +135,54 @@ Default URL:
 http://127.0.0.1:8787
 ```
 
+### AI-enabled local run
+
+Engine-room and review analysis now depend on the Python engine service. From the repo root:
+
+```powershell
+py -3.11 -m venv model-server\.venv
+model-server\.venv\Scripts\python -m pip install --upgrade pip
+model-server\.venv\Scripts\python -m pip install -r model-server\requirements-serving.txt
+model-server\.venv\Scripts\python -m pip install -e .\ukumog-engine
+model-server\.venv\Scripts\python -m uvicorn app:app --app-dir model-server/src/serving --host 127.0.0.1 --port 8011
+```
+
+Then in another terminal:
+
+```powershell
+npm run build:app
+npm run server
+```
+
+Default engine health URLs:
+
+```text
+http://127.0.0.1:8011/health
+http://127.0.0.1:8787/api/engine/health
+```
+
 ### Common scripts
 
 - `npm run build:app` builds the web app into `site/`
 - `npm run server` starts the Node server
+- `npm run test:engine-contract` validates the end-to-end engine contract across `RemoteEngineClient -> Node -> Python`
+- `npm run test:engine-preflight` runs the current engine release preflight: `build + rules compare + engine contract + engine smoke + review smoke`
+- `npm run test:engine-smoke` runs the engine-room smoke regression
+- `npm run test:review-smoke` runs the review regression for remote analysis and branching
+- `npm run test:rules-compare` compares `game-core.mjs` rules against `ukumog-engine`
+- `npm run release:docker:verify` runs the repo-level release verification checks
+- `npm run release:docker:build` builds the Linux x86_64 Docker image
+- `npm run release:docker:smoke` smoke-checks the Docker container health endpoints
+- `npm run release:docker:save` exports the Docker image tar, checksum, and manifest
+- `npm run release:docker:package` runs verify + build + smoke + tar export in one flow
 - `npm run desktop` builds and starts the Electron shell
 - `npm run dist` builds the Windows installer
+
+### Docker server release
+
+The current Linux x86_64 Docker server release path is documented in:
+
+- [docs/DOCKER_RELEASE_RUNBOOK_LINUX_X86_64.md](docs/DOCKER_RELEASE_RUNBOOK_LINUX_X86_64.md)
 
 ### Custom port
 
@@ -239,6 +288,8 @@ This split is what makes later features easier:
 - A server restart does not restore live rooms or unfinished games
 - Rooms are still kept in single-process memory and are not ready for multi-instance scaling
 - Local record archives depend on browser `localStorage` and do not sync across devices
+- Engine-room and review AI require the separate Python engine service to be running
+- Engine AI availability depends on the Python `model-server` and its current supported board-size/runtime paths
 - There is no full automated test suite yet
 - There is no admin tooling, moderation, rate limiting, or audit trail for production use
 

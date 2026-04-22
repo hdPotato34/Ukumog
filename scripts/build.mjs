@@ -1,4 +1,4 @@
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -38,14 +38,6 @@ await build({
 });
 
 await build({
-  entryPoints: [path.join(rootDir, "engine", "engine-worker.mjs")],
-  bundle: true,
-  format: "esm",
-  outfile: path.join(outDir, "engine-worker.js"),
-  target: ["chrome120"],
-});
-
-await build({
   entryPoints: [path.join(rootDir, "server.mjs")],
   bundle: true,
   platform: "node",
@@ -53,13 +45,6 @@ await build({
   outfile: path.join(outDir, "server.cjs"),
   target: ["node20"],
 });
-
-await mkdir(path.join(outDir, "engine"), { recursive: true });
-await cp(
-  path.join(rootDir, "engine", "engine-pack.default.json"),
-  path.join(outDir, "engine", "engine-pack.default.json"),
-  { force: true },
-);
 
 await writeFile(path.join(outDir, "index.html"), html, "utf8");
 console.log("Web assets built into ./site");

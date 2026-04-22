@@ -8,7 +8,7 @@ export function nextMainlineNodeToAnalyze(record, analysisByNodeId = {}, analysi
   return buildMainlineNodeIds(record).find((nodeId) => (
     nodeId !== excludeNodeId
     && !analysisByNodeId[nodeId]
-    && analysisStatusByNodeId[nodeId] !== "loading"
+    && (!analysisStatusByNodeId[nodeId] || analysisStatusByNodeId[nodeId] === "idle")
   )) || null;
 }
 

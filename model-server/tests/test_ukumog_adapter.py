@@ -16,8 +16,8 @@ from schemas import EngineConfig, EngineRequest, EngineState
 from ukumog_adapter import EngineAdapterError, frontend_state_to_position, move_to_notation, run_engine_analysis
 
 
-def empty_board() -> list[list[None]]:
-    return [[None for _ in range(11)] for _ in range(11)]
+def empty_board(board_size: int = 11) -> list[list[None]]:
+    return [[None for _ in range(board_size)] for _ in range(board_size)]
 
 
 def request_from_board(
@@ -52,6 +52,17 @@ class UkumogAdapterTests(unittest.TestCase):
         self.assertEqual((response.bestMove.row, response.bestMove.col), (5, 5))
         self.assertEqual(response.bestMove.notation, "F6")
 
+    def test_empty_nine_board_maps_and_returns_center_move(self) -> None:
+        request = request_from_board(empty_board(9), board_size=9, max_depth=1)
+        position = frontend_state_to_position(request)
+        self.assertEqual(position.empty_count, 81)
+        self.assertEqual(position.board_size, 9)
+
+        response = run_engine_analysis(request)
+        self.assertIsNotNone(response.bestMove)
+        self.assertEqual((response.bestMove.row, response.bestMove.col), (4, 4))
+        self.assertEqual(response.bestMove.notation, "E5")
+
     def test_win_now_position_returns_winning_move(self) -> None:
         board = empty_board()
         for col in (0, 2, 4, 6):
@@ -80,7 +91,7 @@ class UkumogAdapterTests(unittest.TestCase):
         self.assertNotEqual((response.bestMove.row, response.bestMove.col), (5, 6))
 
     def test_unsupported_board_size_raises_specific_error(self) -> None:
-        request = request_from_board(empty_board(), board_size=9)
+        request = request_from_board(empty_board(10), board_size=10)
 
         with self.assertRaises(EngineAdapterError) as raised:
             frontend_state_to_position(request)

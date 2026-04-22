@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .board import BOARD_CELLS, BOARD_SIZE, bit, coord_to_index, is_on_board
 
@@ -87,6 +88,7 @@ def _build_influence_table(
     return tuple(influence)
 
 
+@lru_cache(maxsize=None)
 def generate_masks(board_size: int = BOARD_SIZE) -> MaskTables:
     board_cells = board_size * board_size
     masks4 = _build_patterns(board_size, 4)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .board import BOARD_SIZE, bit, iter_set_bits
+from .board import bit, iter_set_bits
 from .incremental import IncrementalState
 from .masks import DEFAULT_MASKS, MaskTables
 from .position import MoveType, Position, classify_move_bits
@@ -43,8 +43,8 @@ class TacticalSnapshot:
 def _candidate_bits(position: Position, tables: MaskTables) -> int:
     occupied_bits = position.occupied_bits
     if not occupied_bits:
-        center = BOARD_SIZE // 2
-        return bit(center * BOARD_SIZE + center)
+        center = tables.board_size // 2
+        return bit(center * tables.board_size + center)
 
     relevant_bits = 0
     for cell in iter_set_bits(occupied_bits):

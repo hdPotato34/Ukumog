@@ -1,5 +1,6 @@
 services:
   anti-gomoku-room-server:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,12 +8,14 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      HOST: 0.0.0.0
       PORT: 8787
       UKUMOG_HOST: 127.0.0.1
       UKUMOG_PORT: 8011
+      ENGINE_SERVICE_ORIGIN: http://127.0.0.1:8011
+      ENGINE_SERVICE_TIMEOUT_MS: 15000
     ports:
       - "8787:8787"
-      - "8011:8011"
     healthcheck:
       test:
         - CMD

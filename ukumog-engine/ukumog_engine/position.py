@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
-from .board import BOARD_CELLS, BOARD_SIZE, FULL_BOARD_MASK, bit, iter_set_bits
+from .board import BOARD_SIZE, bit, iter_set_bits
 from .masks import DEFAULT_MASKS, MaskTables
 
 
@@ -33,35 +33,54 @@ class Position:
     black_bits: int = 0
     white_bits: int = 0
     side_to_move: Color = Color.BLACK
+    board_size: int = field(default=BOARD_SIZE)
 
     def __post_init__(self) -> None:
         overlap = self.black_bits & self.white_bits
         if overlap:
             raise ValueError(f"overlapping stones detected: {overlap:b}")
+        if self.board_size <= 0:
+            raise ValueError("board_size must be positive")
+        max_bits = 1 << (self.board_size * self.board_size)
+        if self.black_bits < 0 or self.white_bits < 0:
+            raise ValueError("bitboards cannot be negative")
+        if self.black_bits >= max_bits or self.white_bits >= max_bits:
+            raise ValueError(f"stones exceed the {self.board_size}x{self.board_size} board bounds")
 
     @classmethod
-    def initial(cls) -> "Position":
-        return cls()
+    def initial(cls, board_size: int = BOARD_SIZE) -> "Position":
+        return cls(board_size=board_size)
 
     @classmethod
-    def from_rows(cls, rows: list[str] | tuple[str, ...], side_to_move: Color = Color.BLACK) -> "Position":
-        if len(rows) != BOARD_SIZE:
-            raise ValueError(f"expected {BOARD_SIZE} rows, found {len(rows)}")
+    def from_rows(
+        cls,
+        rows: list[str] | tuple[str, ...],
+        side_to_move: Color = Color.BLACK,
+        board_size: int | None = None,
+    ) -> "Position":
+        resolved_board_size = len(rows) if board_size is None else board_size
+        if len(rows) != resolved_board_size:
+            raise ValueError(f"expected {resolved_board_size} rows, found {len(rows)}")
 
         black_bits = 0
         white_bits = 0
         for row_index, row in enumerate(rows):
-            if len(row) != BOARD_SIZE:
-                raise ValueError(f"row {row_index} length is {len(row)} instead of {BOARD_SIZE}")
+            if len(row) != resolved_board_size:
+                raise ValueError(f"row {row_index} length is {len(row)} instead of {resolved_board_size}")
             for col_index, cell in enumerate(row):
-                cell_bit = bit(row_index * BOARD_SIZE + col_index)
+                cell_bit = bit(row_index * resolved_board_size + col_index)
                 if cell in {"B", "b", "X", "x"}:
                     black_bits |= cell_bit
                 elif cell in {"W", "w", "O", "o"}:
                     white_bits |= cell_bit
                 elif cell != ".":
                     raise ValueError(f"unexpected board character: {cell!r}")
-        return cls(black_bits=black_bits, white_bits=white_bits, side_to_move=side_to_move)
+        return cls(
+            black_bits=black_bits,
+            white_bits=white_bits,
+            side_to_move=side_to_move,
+            board_size=resolved_board_size,
+        )
 
     @property
     def occupied_bits(self) -> int:
@@ -69,11 +88,11 @@ class Position:
 
     @property
     def empty_bits(self) -> int:
-        return FULL_BOARD_MASK & ~self.occupied_bits
+        return ((1 << (self.board_size * self.board_size)) - 1) & ~self.occupied_bits
 
     @property
     def empty_count(self) -> int:
-        return BOARD_CELLS - self.occupied_bits.bit_count()
+        return (self.board_size * self.board_size) - self.occupied_bits.bit_count()
 
     def color_bits(self, color: Color) -> int:
         return self.black_bits if color is Color.BLACK else self.white_bits
@@ -85,7 +104,7 @@ class Position:
         return self.color_bits(self.side_to_move.opponent)
 
     def is_empty(self, move: int) -> bool:
-        if not 0 <= move < BOARD_CELLS:
+        if not 0 <= move < self.board_size * self.board_size:
             return False
         return not bool(self.occupied_bits & bit(move))
 
@@ -100,6 +119,7 @@ class Position:
             black_bits=self.black_bits,
             white_bits=self.white_bits,
             side_to_move=side_to_move,
+            board_size=self.board_size,
         )
 
 
@@ -156,5 +176,6 @@ def play_move(position: Position, move: int, tables: MaskTables = DEFAULT_MASKS)
         black_bits=next_black_bits,
         white_bits=next_white_bits,
         side_to_move=position.side_to_move.opponent,
+        board_size=position.board_size,
     )
     return next_position, result

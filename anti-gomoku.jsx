@@ -40,11 +40,19 @@ import {
   deleteArchivedRecord,
 } from "./game-record.mjs";
 import { applyEngineRoomMove, canPlayerMoveInEngineRoom, createEngineRoomSession } from "./engine-room.mjs";
-import { RemoteEngineClient } from "./engine/engine-client.mjs";
+import { normalizeEngineCapabilities, supportsEngineBoardSize, formatSupportedBoardSizes } from "./engine/engine-capabilities.mjs";
+import { fetchEngineHealth, RemoteEngineClient } from "./engine/engine-client.mjs";
 import { EngineGameplayRunner, withEngineDebug } from "./engine/engine-gameplay-runner.mjs";
+import {
+  loadStoredEngineSettings,
+  sanitizeEngineSettings,
+  sanitizePlayEngineSettings,
+  saveStoredEngineSettings,
+} from "./engine/engine-settings.mjs";
 
 const LOBBY_POLL_MS = 4000;
 const ROOM_POLL_MS = 1000;
+const ENGINE_HEALTH_REFRESH_MS = 15000;
 
 function resolveRoomMode(payload, fallback = "join") {
   if (payload?.mode) {
@@ -96,6 +104,12 @@ export default function App() {
   const [onlineSession, setOnlineSession] = useState(null);
   const [engineSession, setEngineSession] = useState(null);
   const [reviewSession, setReviewSession] = useState(null);
+  const [engineSettings, setEngineSettings] = useState(() => loadStoredEngineSettings());
+  const [engineHealth, setEngineHealth] = useState({
+    status: "idle",
+    payload: null,
+    message: "",
+  });
   const [localConfig, setLocalConfig] = useState(() => sanitizeConfig(DEFAULT_MATCH_CONFIG));
   const [localGameKey, setLocalGameKey] = useState(0);
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -155,6 +169,67 @@ export default function App() {
   useEffect(() => {
     engineSessionRef.current = engineSession;
   }, [engineSession]);
+
+  useEffect(() => {
+    saveStoredEngineSettings(engineSettings);
+  }, [engineSettings]);
+
+  useEffect(() => {
+    let closed = false;
+    let currentController = null;
+    let currentTimerId = null;
+
+    const refresh = async () => {
+      currentController?.abort();
+      const controller = new AbortController();
+      currentController = controller;
+      setEngineHealth((prev) => ({
+        ...prev,
+        status: prev.payload ? "refreshing" : "loading",
+        message: "",
+      }));
+
+      try {
+        const payload = await fetchEngineHealth({ signal: controller.signal });
+        if (closed || currentController !== controller) {
+          return;
+        }
+        setEngineHealth({
+          status: "ready",
+          payload: {
+            ...payload,
+            capabilities: normalizeEngineCapabilities(payload?.capabilities),
+          },
+          message: "",
+        });
+      } catch (error) {
+        if (closed || controller.signal.aborted) {
+          return;
+        }
+        setEngineHealth({
+          status: "error",
+          payload: null,
+          message: error instanceof Error && error.message
+            ? error.message
+            : "The engine service is currently unavailable.",
+        });
+      } finally {
+        if (!closed && currentController === controller) {
+          currentTimerId = setTimeout(refresh, ENGINE_HEALTH_REFRESH_MS);
+        }
+      }
+    };
+
+    void refresh();
+
+    return () => {
+      closed = true;
+      currentController?.abort();
+      if (currentTimerId) {
+        clearTimeout(currentTimerId);
+      }
+    };
+  }, []);
 
   useEffect(() => () => {
     if (roomPollTimerRef.current) clearTimeout(roomPollTimerRef.current);
@@ -867,10 +942,41 @@ export default function App() {
 
   const handleStartEngine = () => {
     closeMenus();
+    const cleanConfig = sanitizeConfig(createConfig);
+    if (engineHealth.status !== "ready" || !engineHealth.payload?.capabilities) {
+      setAppNotice(engineHealth.message || "The engine service is not ready yet. Wait for engine health to load and try again.");
+      return;
+    }
+    if (!supportsEngineBoardSize(engineHealth.payload.capabilities, cleanConfig.boardSize)) {
+      setAppNotice(`The hd engine currently supports ${formatSupportedBoardSizes(engineHealth.payload.capabilities)} only.`);
+      return;
+    }
     engineRunnerRef.current?.cancel();
-    setEngineSession(createEngineRoomSession(createConfig, viewer));
+    setEngineSession(createEngineRoomSession(cleanConfig, viewer, {
+      engineSettings: engineSettings.play,
+    }));
     setScreen("engine");
     setAppNotice("");
+  };
+
+  const handlePlayEngineSettingsChange = (nextPlaySettings) => {
+    const cleanPlaySettings = sanitizePlayEngineSettings(nextPlaySettings);
+    setEngineSettings((prev) => sanitizeEngineSettings({
+      ...prev,
+      play: cleanPlaySettings,
+    }));
+    setEngineSession((prev) => (
+      prev
+        ? {
+          ...prev,
+          engineSettings: cleanPlaySettings,
+        }
+        : prev
+    ));
+  };
+
+  const handleReviewEngineSettingsChange = (nextSettings) => {
+    setEngineSettings(sanitizeEngineSettings(nextSettings));
   };
 
   const handleSaveLocalRecord = ({ config, moves, state }) => {
@@ -1084,6 +1190,8 @@ export default function App() {
     return (
       <EngineGame
         session={engineSession}
+        engineSettings={engineSettings.play}
+        onEngineSettingsChange={handlePlayEngineSettingsChange}
         onMove={handleEngineMove}
         onBackToHall={() => { closeEngineView(""); }}
         onLeave={() => { closeEngineView(""); }}
@@ -1102,6 +1210,11 @@ export default function App() {
       <ReviewGame
         record={reviewSession.record}
         currentNodeId={reviewSession.currentNodeId}
+        sessionTokenRef={sessionTokenRef}
+        engineSettings={engineSettings}
+        engineCapabilities={engineHealth.payload?.capabilities || null}
+        engineHealthMessage={engineHealth.message}
+        onEngineSettingsChange={handleReviewEngineSettingsChange}
         onBack={() => {
           setScreen(reviewSession.backScreen || "profile");
           setReviewSession(null);
@@ -1164,8 +1277,8 @@ export default function App() {
   }
 
   return (
-    <HallPage
-      viewer={viewer}
+      <HallPage
+        viewer={viewer}
       notice={notice}
       onDismissNotice={() => setNotice("")}
       activeTab="hall"
@@ -1178,10 +1291,15 @@ export default function App() {
       roomCode={roomCode}
       onRoomCodeChange={setRoomCode}
       onJoinByCode={() => { void handleJoinByCode(); }}
-      createConfig={createConfig}
-      createPublicVisible={createPublicVisible}
-      onConfigChange={setCreateConfig}
-      onCreatePublicVisibleChange={setCreatePublicVisible}
+        createConfig={createConfig}
+        engineSettings={engineSettings.play}
+        engineCapabilities={engineHealth.payload?.capabilities || null}
+        engineHealthStatus={engineHealth.status}
+        engineHealthMessage={engineHealth.message}
+        createPublicVisible={createPublicVisible}
+        onConfigChange={setCreateConfig}
+        onEngineSettingsChange={handlePlayEngineSettingsChange}
+        onCreatePublicVisibleChange={setCreatePublicVisible}
       onCreatePublic={() => { void handleCreatePublicRoom(); }}
       onOpenRoom={(room) => { void handleOpenRoom(room); }}
       onStartLocal={handleStartLocal}

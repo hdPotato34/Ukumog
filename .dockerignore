@@ -4,7 +4,12 @@ release
 .git
 .gitignore
 electron
+data
+site
+.tmp-docker-config
 tmp_room_server.out.log
 tmp_room_server.err.log
 npm-debug.log
 *.check.js
+*.tar
+*.sha256
