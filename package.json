@@ -36,7 +36,7 @@
     "appId": "com.hd.antigomoku",
     "productName": "Anti-Gomoku Online",
     "directories": {
-      "output": "release"
+      "output": "release/electron"
     },
     "files": [
       "electron/**/*",

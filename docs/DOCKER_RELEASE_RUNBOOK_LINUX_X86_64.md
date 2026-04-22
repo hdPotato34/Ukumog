@@ -81,18 +81,18 @@ npm run release:docker:save
 Equivalent raw commands:
 
 ```powershell
-docker save -o release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar anti-gomoku-room-server:2026-04-21-r3
-Get-FileHash release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar -Algorithm SHA256 | ForEach-Object {
+docker save -o release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar anti-gomoku-room-server:2026-04-21-r3
+Get-FileHash release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar -Algorithm SHA256 | ForEach-Object {
   "$($_.Hash.ToLower())  anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar"
-} | Set-Content release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.sha256
+} | Set-Content release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.sha256
 ```
 
 The helper also writes:
 
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.sha256`
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.manifest.json`
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.runbook.md`
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.checklist.md`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.sha256`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.manifest.json`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.runbook.md`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.checklist.md`
 
 ### 4. One-shot internal release flow
 

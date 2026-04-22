@@ -29,17 +29,18 @@ Optional but recommended:
 
 Confirm before upload:
 
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar` exists
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.sha256` exists
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.manifest.json` exists
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.runbook.md` exists
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar` exists
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.sha256` exists
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.manifest.json` exists
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.runbook.md` exists
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.checklist.md` exists
 - `manifest.json` shows the expected `gitCommit`, `imageTag`, and `archiveSha256`
 
 PowerShell quick check:
 
 ```powershell
-Get-ChildItem release\anti-gomoku-room-server_2026-04-21-r3_linux-x86_64*
-Get-Content release\anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.manifest.json
+Get-ChildItem release\docker\anti-gomoku-room-server_2026-04-21-r3_linux-x86_64*
+Get-Content release\docker\anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.manifest.json
 ```
 
 ## Upload Examples

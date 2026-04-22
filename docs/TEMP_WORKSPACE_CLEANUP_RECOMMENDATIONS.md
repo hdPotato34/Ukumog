@@ -19,7 +19,7 @@ Last updated: `2026-04-22`
 
 1. 根目录堆放了多份旧 tar 包
 2. 根目录残留了多组 `tmp_*.log`
-3. `release/` 目录里同时存在 Docker 交付物和旧的 Electron 打包产物
+3. `release/` 目录此前同时存在 Docker 交付物和旧的 Electron 打包产物
 4. 一些说明类 Markdown 还散落在仓库根目录，没有收进 `docs/`
 
 ## 建议分三批做
@@ -48,7 +48,7 @@ Last updated: `2026-04-22`
 原因：
 
 - 这些文件都不应该长期停留在仓库根目录
-- 当前正式保留的 Docker 交付物已经在 `release/` 内
+- 当前正式保留的 Docker 交付物应该集中在 `release/docker/`
 - 日志文件都是可再生成物，没有长期保存价值
 
 ## 第二批：建议搬家，不建议直接删
@@ -79,7 +79,7 @@ Last updated: `2026-04-22`
 
 ### `release/` 目录混放问题
 
-当前 `release/` 里同时有：
+当前建议的整理目标是：
 
 - Docker tar 交付物
 - Electron `win-unpacked`
@@ -100,8 +100,8 @@ Last updated: `2026-04-22`
 
 短期建议：
 
-- 如果当前主目标是服务器 Docker 交付，就把 Electron 旧产物移出 `release/`
-- 至少不要让 Docker tar 和 Electron 安装包继续混在同一级
+- Docker 产物放 `release/docker/`
+- Electron 产物放 `release/electron/`
 
 ### 根目录说明文件规范
 
@@ -126,11 +126,11 @@ Last updated: `2026-04-22`
 - `ukumog-engine/`
 - `docs/DOCKER_RELEASE_RUNBOOK_LINUX_X86_64.md`
 - `docs/DOCKER_SERVER_UPLOAD_CHECKLIST_LINUX_X86_64.md`
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar`
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.sha256`
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.manifest.json`
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.runbook.md`
-- `release/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.checklist.md`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.tar`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.sha256`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.manifest.json`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.runbook.md`
+- `release/docker/anti-gomoku-room-server_2026-04-21-r3_linux-x86_64.checklist.md`
 
 ## 推荐的临时清理顺序
 
