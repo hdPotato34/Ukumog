@@ -136,3 +136,15 @@ export async function leaveRoomRequest(sessionToken, roomId, keepalive = false) 
     keepalive,
   }));
 }
+
+export async function fetchEngineInfo() {
+  return apiRequest(baseUrl(), "/api/engine/info");
+}
+
+export async function analyzePositionWithEngine(payload, { signal } = {}) {
+  return apiRequest(baseUrl(), "/api/engine/analyze", {
+    method: "POST",
+    body: payload,
+    signal,
+  });
+}

@@ -1,0 +1,14 @@
+[project]
+name = "ukumog-engine"
+version = "0.1.0"
+description = "Ukumog engine with search, analysis, and JSON bridge entrypoints."
+requires-python = ">=3.11"
+
+[project.scripts]
+ukumog = "ukumog_engine.apps.cli:main"
+ukumog-gui = "ukumog_engine.apps.gui:main"
+ukumog-json = "ukumog_engine.apps.json_bridge:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

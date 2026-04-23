@@ -11,6 +11,7 @@ Current shape of the project:
 - One Node.js HTTP/HTTPS server serves both static assets and online match APIs.
 - One React single-page frontend drives the hall, profile, room, and review flows.
 - One optional Electron shell runs the same app as a desktop build.
+- One optional Python engine bridge can analyze 11x11 review positions.
 
 Online play currently uses `HTTP + polling`. It does not use WebSocket yet.
 
@@ -59,6 +60,7 @@ Online play currently uses `HTTP + polling`. It does not use WebSocket yet.
 - Import modal and clipboard export
 - Local archive naming and save feedback
 - Match history list and rating curve
+- On-demand engine analysis inside the review screen for non-terminal `11x11` positions
 
 ### Board interaction
 
@@ -108,6 +110,7 @@ Online play currently uses `HTTP + polling`. It does not use WebSocket yet.
 
 - Node.js 20 or compatible
 - npm
+- Python 3.11+ if you want server-side engine analysis
 
 ### Install
 
@@ -140,6 +143,39 @@ http://127.0.0.1:8787
 ```powershell
 $env:PORT=8790
 node server.mjs
+```
+
+### Engine integration
+
+The website can call the Ukumog engine through the Python JSON bridge.
+
+If the engine repo is checked out as a sibling directory:
+
+```text
+../Ukumog
+../ukumog-engine
+```
+
+the server will detect it automatically.
+
+You can also point the website server at a specific engine checkout:
+
+```powershell
+$env:UKUMOG_ENGINE_ROOT="D:\ukumog-engine"
+node server.mjs
+```
+
+If Python is not on your default `PATH`:
+
+```powershell
+$env:UKUMOG_PYTHON="E:\Anaconda3\python.exe"
+node server.mjs
+```
+
+Planned vendoring path for a subtree-based merge:
+
+```text
+vendor/ukumog-engine
 ```
 
 ### HTTPS
@@ -177,6 +213,8 @@ Main endpoints:
 - `POST /api/rooms/:roomId/request`
 - `POST /api/rooms/:roomId/chat`
 - `POST /api/rooms/:roomId/leave`
+- `GET /api/engine/info`
+- `POST /api/engine/analyze`
 - `GET /health`
 
 Session tokens are accepted through request headers:
@@ -239,6 +277,7 @@ This split is what makes later features easier:
 - A server restart does not restore live rooms or unfinished games
 - Rooms are still kept in single-process memory and are not ready for multi-instance scaling
 - Local record archives depend on browser `localStorage` and do not sync across devices
+- Engine analysis currently supports only `11x11` non-terminal review positions
 - There is no full automated test suite yet
 - There is no admin tooling, moderation, rate limiting, or audit trail for production use
 
