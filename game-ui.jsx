@@ -24,6 +24,7 @@ import {
   promoteNodePathToMain,
   replayRecord,
 } from "./game-record.mjs";
+import { analyzePositionWithEngine } from "./app-client.mjs";
 import { copyTextToClipboard } from "./online-room.mjs";
 
 const BASE_CSS = `@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');*{box-sizing:border-box}button,input{transition:all .15s ease}button,input,textarea{font:inherit}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}.tb-btn:hover:not(:disabled){color:#c8b060!important;border-color:#6a5030!important}.ng-btn:hover:not(:disabled),.start-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}.menu-btn:hover{color:#a89060!important;border-color:#4a3820!important}.panel-input:focus{outline:none;border-color:#8d713e!important;box-shadow:0 0 0 2px rgba(232,201,106,.08)}`;
@@ -1139,6 +1140,111 @@ export function OnlineGame({ session, shareLink, inviteCopied, onCopyInvite, onM
   );
 }
 
+function formatEngineMove(move) {
+  if (!move) return "--";
+  return moveToNotation(move.row, move.col);
+}
+
+function formatEngineScore(score) {
+  const numeric = Number(score);
+  if (!Number.isFinite(numeric)) return "--";
+  return `${numeric > 0 ? "+" : ""}${Math.round(numeric)}`;
+}
+
+function formatEnginePv(moves = [], limit = 6) {
+  if (!moves.length) return "--";
+  const shown = moves.slice(0, limit).map((move) => formatEngineMove(move));
+  return shown.join(" -> ") + (moves.length > limit ? " ..." : "");
+}
+
+function ReviewEnginePanel({ analysis, loading, error, disabledReason, onAnalyze }) {
+  const topMoves = analysis?.analysis?.root_move_scores || [];
+  const tactics = analysis?.tactics || null;
+
+  return (
+    <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px", display: "grid", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 22, color: GOLD, marginBottom: 6 }}>Engine Analysis</div>
+          <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#a88d59", lineHeight: 1.7 }}>
+            Current node analysis runs through the Python engine bridge. The review tree stays editable; analysis is on-demand.
+          </div>
+        </div>
+        <button className="ng-btn" onClick={onAnalyze} disabled={loading || !!disabledReason} style={actionBtn("solid", loading || !!disabledReason)}>
+          {loading ? "Analyzing..." : "Analyze Position"}
+        </button>
+      </div>
+
+      {disabledReason ? (
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#b79b66", lineHeight: 1.8 }}>{disabledReason}</div>
+      ) : null}
+      {!disabledReason && error ? (
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#dca2a2", lineHeight: 1.8 }}>{error}</div>
+      ) : null}
+
+      {analysis ? (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
+            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Best Move</div>
+              <div style={{ fontSize: 24, color: GOLD, marginTop: 4 }}>{formatEngineMove(analysis.analysis?.best_move)}</div>
+            </div>
+            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Score</div>
+              <div style={{ fontSize: 24, color: "#d9c08a", marginTop: 4 }}>{formatEngineScore(analysis.analysis?.score)}</div>
+            </div>
+            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Depth</div>
+              <div style={{ fontSize: 24, color: "#d0c7b3", marginTop: 4 }}>{analysis.analysis?.depth ?? "--"}</div>
+            </div>
+            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Nodes</div>
+              <div style={{ fontSize: 20, color: "#b8c8a9", marginTop: 6 }}>{analysis.analysis?.stats?.total_nodes ?? "--"}</div>
+            </div>
+          </div>
+
+          <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+            <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase", marginBottom: 6 }}>Principal Variation</div>
+            <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d2bd92", lineHeight: 1.8 }}>
+              {formatEnginePv(analysis.analysis?.principal_variation || [])}
+            </div>
+          </div>
+
+          {tactics ? (
+            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase", marginBottom: 6 }}>Tactical Snapshot</div>
+              <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d2bd92", lineHeight: 1.8 }}>
+                <div>Winning moves: {(tactics.winning_moves || []).length}</div>
+                <div>Forced blocks: {(tactics.forced_blocks || []).length}</div>
+                <div>Safe threats: {(tactics.safe_threats || []).length}</div>
+                <div>Double threats: {(tactics.double_threats || []).length}</div>
+              </div>
+            </div>
+          ) : null}
+
+          {topMoves.length ? (
+            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase", marginBottom: 6 }}>Top Candidates</div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {topMoves.slice(0, 5).map((entry, index) => (
+                  <div key={`${entry.move?.index || index}:${entry.score}`} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontFamily: "'DM Sans'", fontSize: 12, color: "#d2bd92" }}>
+                    <span>{index + 1}. {formatEngineMove(entry.move)}</span>
+                    <span>{formatEngineScore(entry.score)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : !disabledReason && !loading && !error ? (
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#b79b66", lineHeight: 1.8 }}>
+          Choose any non-terminal 11x11 position in the review tree and run the engine on demand.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSaveRecord }) {
   const [activeNodeId, setActiveNodeId] = useState(() => currentNodeId || findDeepestMainlineNode(record));
   const [feedback, setFeedback] = useState("");
@@ -1147,6 +1253,10 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveTitle, setSaveTitle] = useState(record.meta?.title || "");
   const [annotationResetToken, setAnnotationResetToken] = useState(0);
+  const [engineAnalysis, setEngineAnalysis] = useState(null);
+  const [engineError, setEngineError] = useState("");
+  const [engineLoading, setEngineLoading] = useState(false);
+  const engineAbortRef = useRef(null);
 
   useEffect(() => {
     if (!feedback) return undefined;
@@ -1159,6 +1269,13 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
     setSaveTitle(record.meta?.title || "");
     setAnnotationResetToken(0);
   }, [record, currentNodeId]);
+
+  useEffect(() => () => {
+    if (engineAbortRef.current) {
+      engineAbortRef.current.abort();
+      engineAbortRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -1214,6 +1331,22 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   const timeline = getTimeline(record, activeNodeId);
   const previousBranchNodeId = cycleBranchNode(record, activeNodeId, -1);
   const nextBranchNodeId = cycleBranchNode(record, activeNodeId, 1);
+  const engineSupported = record.config.boardSize === 11;
+  const engineDisabledReason = !engineSupported
+    ? `Engine analysis currently supports only 11x11 records. This record is ${record.config.boardSize}x${record.config.boardSize}.`
+    : replay.state.result
+      ? "Move back one ply from a finished position to analyze the live decision before the terminal move."
+      : "";
+
+  useEffect(() => {
+    if (engineAbortRef.current) {
+      engineAbortRef.current.abort();
+      engineAbortRef.current = null;
+    }
+    setEngineLoading(false);
+    setEngineAnalysis(null);
+    setEngineError("");
+  }, [record, activeNodeId]);
 
   const persistRecord = async (nextRecord, message, nextNodeId = activeNodeId) => {
     const saved = await onSaveRecord(nextRecord);
@@ -1277,6 +1410,53 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
     const promoted = promoteNodePathToMain(record, activeNodeId);
     onChangeRecord(promoted, activeNodeId);
     await persistRecord(promoted, "Current branch promoted to the main line.");
+  };
+
+  const handleAnalyzePosition = async () => {
+    if (engineDisabledReason) {
+      setEngineAnalysis(null);
+      setEngineError(engineDisabledReason);
+      return;
+    }
+
+    if (engineAbortRef.current) {
+      engineAbortRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    engineAbortRef.current = controller;
+    setEngineLoading(true);
+    setEngineError("");
+
+    try {
+      const payload = await analyzePositionWithEngine(
+        {
+          config: record.config,
+          state: replay.state,
+          engine: {
+            depth: 5,
+            timeMs: 1500,
+          },
+        },
+        { signal: controller.signal },
+      );
+      if (engineAbortRef.current !== controller) {
+        return;
+      }
+      engineAbortRef.current = null;
+      setEngineAnalysis(payload);
+      setEngineLoading(false);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (engineAbortRef.current === controller) {
+        engineAbortRef.current = null;
+      }
+      setEngineAnalysis(null);
+      setEngineError(error instanceof Error ? error.message : "Could not analyze the current position.");
+      setEngineLoading(false);
+    }
   };
 
   return (
@@ -1346,6 +1526,13 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
                 <div>Shortcuts: Left/Right move, Up/Down branch, Home/End jump.</div>
               </div>
             </div>
+            <ReviewEnginePanel
+              analysis={engineAnalysis}
+              loading={engineLoading}
+              error={engineError}
+              disabledReason={engineDisabledReason}
+              onAnalyze={() => { void handleAnalyzePosition(); }}
+            />
           </div>
         </div>
       </div>

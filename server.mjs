@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
@@ -10,6 +11,7 @@ const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
 const CLOSED_ROOM_TTL_MS = 60_000;
 const ACTIVE_SESSION_WINDOW_MS = 90_000;
+const ENGINE_REQUEST_TIMEOUT_MS = Number(process.env.ENGINE_REQUEST_TIMEOUT_MS || 15_000);
 const INITIAL_RATING = 1000;
 const STABLE_RATING_K = 20;
 const HOT_RATING_K = 60;
@@ -41,6 +43,180 @@ let persistentState = {
 let persistQueue = Promise.resolve();
 
 const staticRoot = resolveStaticRoot();
+
+function preferredPythonCommands() {
+  if (process.env.UKUMOG_PYTHON) {
+    return [[process.env.UKUMOG_PYTHON]];
+  }
+  if (process.platform === "win32") {
+    return [["python"], ["py", "-3"], ["py"]];
+  }
+  return [["python3"], ["python"]];
+}
+
+function isEngineRoot(candidate) {
+  if (!candidate) return false;
+  return (
+    existsSync(path.join(candidate, "pyproject.toml"))
+    && existsSync(path.join(candidate, "ukumog_engine", "apps", "json_bridge.py"))
+  );
+}
+
+function resolveEngineRoot() {
+  const envRoot = process.env.UKUMOG_ENGINE_ROOT ? path.resolve(process.env.UKUMOG_ENGINE_ROOT) : "";
+  const candidates = [
+    envRoot,
+    path.join(process.cwd(), "vendor", "ukumog-engine"),
+    path.join(moduleDir, "vendor", "ukumog-engine"),
+    path.resolve(moduleDir, "..", "ukumog-engine"),
+  ];
+  return candidates.find(isEngineRoot) || "";
+}
+
+function normalizeBridgeError(message, fallback) {
+  const clean = String(message || "").trim();
+  return clean || fallback;
+}
+
+async function runBridgeCommand(commandParts, requestPayload) {
+  const engineRoot = resolveEngineRoot();
+  if (!engineRoot) {
+    throw createHttpError(
+      503,
+      "Ukumog engine bridge is not available. Add the engine repo as vendor/ukumog-engine, keep a sibling ukumog-engine checkout, or set UKUMOG_ENGINE_ROOT.",
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      commandParts[0],
+      [...commandParts.slice(1), "-m", "ukumog_engine.apps.json_bridge"],
+      {
+        cwd: engineRoot,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
+
+    let stdout = "";
+    let stderr = "";
+    let finished = false;
+
+    const finish = (callback) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeoutId);
+      callback();
+    };
+
+    const timeoutId = setTimeout(() => {
+      finish(() => {
+        child.kill();
+        reject(createHttpError(504, "Ukumog engine request timed out."));
+      });
+    }, ENGINE_REQUEST_TIMEOUT_MS);
+
+    child.on("error", (error) => {
+      finish(() => reject(error));
+    });
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    child.on("close", (code) => {
+      finish(() => {
+        let parsed = null;
+        try {
+          parsed = stdout.trim() ? JSON.parse(stdout) : null;
+        } catch {
+          parsed = null;
+        }
+
+        if (code !== 0) {
+          const message = normalizeBridgeError(parsed?.error, stderr || "Ukumog engine request failed.");
+          reject(createHttpError(502, message));
+          return;
+        }
+
+        if (!parsed?.ok) {
+          reject(createHttpError(502, normalizeBridgeError(parsed?.error, "Ukumog engine request failed.")));
+          return;
+        }
+
+        resolve(parsed);
+      });
+    });
+
+    child.stdin.end(JSON.stringify(requestPayload));
+  });
+}
+
+async function runUkumogBridge(requestPayload) {
+  let missingCommand = false;
+  for (const commandParts of preferredPythonCommands()) {
+    try {
+      return await runBridgeCommand(commandParts, requestPayload);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        missingCommand = true;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (missingCommand) {
+    throw createHttpError(
+      503,
+      "Python was not found for the Ukumog engine bridge. Install Python 3.11+ or set UKUMOG_PYTHON.",
+    );
+  }
+
+  throw createHttpError(503, "Ukumog engine bridge is not available.");
+}
+
+function boardRowsFromState(state, config = {}) {
+  const board = state?.board;
+  const cleanConfig = sanitizeConfig(config);
+  const boardSize = cleanConfig.boardSize;
+  if (!Array.isArray(board) || board.length !== boardSize) {
+    throw createHttpError(400, "Invalid board payload.");
+  }
+
+  return board.map((row, rowIndex) => {
+    if (!Array.isArray(row) || row.length !== boardSize) {
+      throw createHttpError(400, `Invalid board row ${rowIndex}.`);
+    }
+    return row.map((cell) => {
+      if (cell === "B" || cell === "W") return cell;
+      if (cell === null) return ".";
+      throw createHttpError(400, "Board cells must be 'B', 'W', or null.");
+    }).join("");
+  });
+}
+
+function bridgeColor(turn) {
+  if (turn === "B") return "black";
+  if (turn === "W") return "white";
+  throw createHttpError(400, "Invalid side-to-move payload.");
+}
+
+function resolveEngineAnalyzeOptions(input = {}) {
+  const rawDepth = Number(input.depth ?? 5);
+  const rawTimeMs = Number(input.timeMs ?? 1500);
+  const depth = Number.isFinite(rawDepth) ? Math.max(1, Math.min(12, Math.round(rawDepth))) : 5;
+  const timeMs = Number.isFinite(rawTimeMs) ? Math.max(0, Math.min(20_000, Math.round(rawTimeMs))) : 1500;
+  return {
+    depth,
+    timeMs,
+  };
+}
 
 function resolveStaticRoot() {
   const candidates = [
@@ -1598,6 +1774,42 @@ async function handleApi(req, res, pathname, searchParams) {
 
   if (pathname === "/health" && req.method === "GET") {
     writeJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (pathname === "/api/engine/info" && req.method === "GET") {
+    const payload = await runUkumogBridge({ command: "engine_info" });
+    writeJson(res, 200, payload);
+    return;
+  }
+
+  if (pathname === "/api/engine/analyze" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const config = sanitizeConfig(body.config || {});
+    if (config.boardSize !== 11) {
+      throw createHttpError(400, "Engine analysis currently supports only 11x11 games.");
+    }
+
+    const state = body.state || {};
+    if (state.result) {
+      throw createHttpError(400, "Engine analysis is only available for non-terminal positions.");
+    }
+
+    const options = resolveEngineAnalyzeOptions(body.engine || {});
+    const payload = await runUkumogBridge({
+      command: "analyze",
+      position: {
+        rows: boardRowsFromState(state, config),
+        side_to_move: bridgeColor(state.turn),
+      },
+      engine: {
+        depth: options.depth,
+        time_ms: options.timeMs,
+        analyze_root: true,
+        include_move_maps: false,
+      },
+    });
+    writeJson(res, 200, payload);
     return;
   }
 
