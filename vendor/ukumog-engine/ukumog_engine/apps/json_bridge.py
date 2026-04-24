@@ -21,6 +21,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Pretty-print the JSON response for manual debugging.",
     )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Read newline-delimited JSON requests from stdin and emit one JSON response per line.",
+    )
     return parser.parse_args(argv)
 
 
@@ -32,6 +37,21 @@ def _read_request_text(args: argparse.Namespace) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.stream:
+        for line in sys.stdin:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+                response = handle_request(payload)
+            except (RequestError, json.JSONDecodeError, ValueError) as exc:
+                response = {"ok": False, "error": str(exc)}
+            json.dump(response, sys.stdout, sort_keys=True)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        return 0
+
     try:
         raw = _read_request_text(args).strip()
         if not raw:

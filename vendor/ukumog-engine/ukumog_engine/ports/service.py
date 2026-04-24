@@ -16,13 +16,14 @@ from .. import (
     index_to_coord,
     play_move,
 )
-from ..app_runtime import build_engine_controller
+from ..app_runtime import EngineController, build_engine_controller, record_search_totals
 
 
 DEFAULT_ANALYZE_DEPTH = 4
 DEFAULT_ANALYZE_TIME_MS = 1500
 VALID_ML_MODES = {"auto", "quiet-value", "full", "policy-only", "root-policy", "root-hybrid"}
 VALID_DEVICES = {"cpu", "cuda", "auto"}
+VALID_ROOT_SCORE_MODES = {"exact", "tt", "none"}
 
 
 class RequestError(ValueError):
@@ -38,8 +39,47 @@ class EngineOptions:
     model_path: Path | None
     ml_mode: str
     learned_weight: float
+    temperature: float
     device: str
     symmetry_ensemble: bool
+    root_score_mode: str
+
+
+_CONTROLLER_CACHE: dict[tuple[object, ...], EngineController] = {}
+
+
+def _controller_cache_key(options: EngineOptions) -> tuple[object, ...]:
+    return (
+        None if options.model_path is None else str(options.model_path.resolve()),
+        options.ml_mode,
+        options.learned_weight,
+        options.temperature,
+        options.device,
+        options.symmetry_ensemble,
+    )
+
+
+def _get_engine_controller(color: Color, options: EngineOptions) -> EngineController:
+    key = _controller_cache_key(options)
+    controller = _CONTROLLER_CACHE.get(key)
+    if controller is None:
+        controller = build_engine_controller(
+            color=color,
+            model_path=options.model_path,
+            ml_mode=options.ml_mode,
+            depth=options.depth,
+            time_seconds=0.0 if options.time_ms is None else options.time_ms / 1000.0,
+            learned_weight=options.learned_weight,
+            device=options.device,
+            temperature=options.temperature,
+            symmetry_ensemble=options.symmetry_ensemble,
+            label="Bridge",
+        )
+        _CONTROLLER_CACHE[key] = controller
+    else:
+        controller.depth = options.depth
+        controller.time_seconds = 0.0 if options.time_ms is None else options.time_ms / 1000.0
+    return controller
 
 
 def _expect_mapping(value: object, *, label: str) -> dict[str, Any]:
@@ -194,7 +234,14 @@ def _parse_engine_options(payload: object | None) -> EngineOptions:
     if not isinstance(device, str) or device not in VALID_DEVICES:
         raise RequestError(f"engine.device must be one of {sorted(VALID_DEVICES)}")
 
+    root_score_mode = mapping.get("root_score_mode", "exact")
+    if not isinstance(root_score_mode, str) or root_score_mode not in VALID_ROOT_SCORE_MODES:
+        raise RequestError(f"engine.root_score_mode must be one of {sorted(VALID_ROOT_SCORE_MODES)}")
+
     learned_weight = float(_expect_number(mapping.get("learned_weight", 0.10), label="engine.learned_weight"))
+    temperature = float(_expect_number(mapping.get("temperature", 0.0), label="engine.temperature"))
+    if temperature < 0:
+        raise RequestError("engine.temperature cannot be negative")
     model_path_value = mapping.get("model_path")
     if model_path_value is None:
         model_path = None
@@ -211,12 +258,14 @@ def _parse_engine_options(payload: object | None) -> EngineOptions:
         model_path=model_path,
         ml_mode=ml_mode,
         learned_weight=learned_weight,
+        temperature=temperature,
         device=device,
         symmetry_ensemble=_expect_bool(
             mapping.get("symmetry_ensemble"),
             label="engine.symmetry_ensemble",
             default=False,
         ),
+        root_score_mode=root_score_mode,
     )
 
 
@@ -281,31 +330,33 @@ def _engine_info() -> dict[str, object]:
             "win": "make a valid arithmetic five",
             "loss": "make a valid arithmetic four without also making a five",
         },
-        "supported_commands": ["engine_info", "analyze", "play_move"],
+        "supported_commands": ["engine_info", "analyze", "play_move", "clear_cache"],
+    }
+
+
+def _clear_cache() -> dict[str, object]:
+    controller_count = len(_CONTROLLER_CACHE)
+    _CONTROLLER_CACHE.clear()
+    return {
+        "command": "clear_cache",
+        "cleared": True,
+        "controllers_cleared": controller_count,
+        "note": "Cleared cached engine controllers, transposition tables, and loaded model state for this bridge process.",
     }
 
 
 def _analyze(payload: dict[str, Any]) -> dict[str, object]:
     position = position_from_payload(payload.get("position"))
     options = _parse_engine_options(payload.get("engine"))
-    controller = build_engine_controller(
-        color=position.side_to_move,
-        model_path=options.model_path,
-        ml_mode=options.ml_mode,
-        depth=options.depth,
-        time_seconds=0.0 if options.time_ms is None else options.time_ms / 1000.0,
-        learned_weight=options.learned_weight,
-        device=options.device,
-        temperature=0.0,
-        symmetry_ensemble=options.symmetry_ensemble,
-        label="Bridge",
-    )
+    controller = _get_engine_controller(position.side_to_move, options)
     search_result = controller.engine.search(
         position,
         max_depth=controller.depth,
         max_time_ms=options.time_ms,
         analyze_root=options.analyze_root,
+        root_score_mode=options.root_score_mode,
     )
+    record_search_totals(controller, search_result)
     return {
         "command": "analyze",
         "position": position_to_payload(position),
@@ -315,7 +366,11 @@ def _analyze(payload: dict[str, Any]) -> dict[str, object]:
             "ml_mode": controller.ml_mode,
             "device": options.device,
             "model_path": None if options.model_path is None else str(options.model_path),
+            "temperature": options.temperature,
             "symmetry_ensemble": options.symmetry_ensemble,
+            "root_score_mode": options.root_score_mode,
+            "cache_size": len(_CONTROLLER_CACHE),
+            "controller_searches_run": controller.searches_run,
         },
         "analysis": _search_result_payload(search_result),
         "tactics": _tactics_payload(position, include_move_maps=options.include_move_maps),
@@ -347,6 +402,8 @@ def handle_request(payload: object) -> dict[str, object]:
         body = _analyze(mapping)
     elif normalized == "play_move":
         body = _play_move(mapping)
+    elif normalized == "clear_cache":
+        body = _clear_cache()
     else:
-        raise RequestError("unsupported command; expected engine_info, analyze, or play_move")
+        raise RequestError("unsupported command; expected engine_info, analyze, play_move, or clear_cache")
     return {"ok": True, **body}

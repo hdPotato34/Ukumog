@@ -580,7 +580,12 @@ class SearchEngine:
         max_time_ms: int | None = None,
         max_nodes: int | None = None,
         analyze_root: bool = False,
+        root_score_mode: str = "exact",
     ) -> SearchResult:
+        if root_score_mode not in {"exact", "tt", "none"}:
+            raise ValueError("root_score_mode must be 'exact', 'tt', or 'none'")
+        collect_exact_root = analyze_root and root_score_mode == "exact"
+        collect_tt_root = analyze_root and root_score_mode == "tt"
         self.stats = SearchStats()
         self.qtt = {}
         self.tactics_cache = {}
@@ -590,7 +595,7 @@ class SearchEngine:
         if self.learned_evaluator is not None and hasattr(self.learned_evaluator, "reset"):
             self.learned_evaluator.reset()
         self._visited_nodes = 0
-        self._analyze_root = analyze_root
+        self._analyze_root = collect_exact_root
         self._root_move_scores_current = ()
         self._root_move_scores_best = ()
         started_at = time.perf_counter()
@@ -606,7 +611,7 @@ class SearchEngine:
         try:
             for depth in range(1, max_depth + 1):
                 try:
-                    if analyze_root or depth < 5 or not principal_variation or abs(best_score) >= MATE_SCORE - 2_000:
+                    if collect_exact_root or depth < 5 or not principal_variation or abs(best_score) >= MATE_SCORE - 2_000:
                         score, line = self._negamax(
                             position,
                             incremental_state,
@@ -626,8 +631,10 @@ class SearchEngine:
                     best_move = line[0]
                     principal_variation = line
                 best_score = score
-                if analyze_root:
+                if collect_exact_root:
                     self._root_move_scores_best = self._root_move_scores_current
+                elif collect_tt_root:
+                    self._root_move_scores_best = self._root_scores_from_tt(position, incremental_state)
                 self.stats.max_depth_completed = depth
         finally:
             self.stats.elapsed_seconds = time.perf_counter() - started_at
@@ -643,6 +650,57 @@ class SearchEngine:
             stats=self.stats,
             root_move_scores=self._root_move_scores_best,
         )
+
+    def _root_scores_from_tt(
+        self,
+        position: Position,
+        incremental_state: IncrementalState,
+    ) -> tuple[RootMoveScore, ...]:
+        cache_key = (*_position_key(position), 0)
+        snapshot = self.tactics_cache.get(cache_key)
+        if snapshot is None:
+            snapshot = self.tactics_cache.get((*_position_key(position), 1))
+        if snapshot is None:
+            snapshot = self._tactics(position, incremental_state, detail=TacticalDetail.BASIC)
+
+        if snapshot.opponent_winning_moves and snapshot.forced_blocks:
+            moves = list(snapshot.forced_blocks)
+        elif snapshot.safe_moves:
+            moves = []
+            seen: set[int] = set()
+            for bucket in (
+                snapshot.double_threats,
+                snapshot.safe_threats,
+                snapshot.critical_restricted_responses,
+                snapshot.critical_restricted_builds,
+                snapshot.safe_moves,
+            ):
+                for move in bucket:
+                    if move not in seen:
+                        moves.append(move)
+                        seen.add(move)
+        else:
+            moves = list(snapshot.candidate_moves)
+
+        root_scores: list[RootMoveScore] = []
+        for move in moves:
+            result = incremental_state.move_result(move, position.side_to_move)
+            if result is MoveResult.WIN:
+                root_scores.append(RootMoveScore(move=move, score=MATE_SCORE))
+                continue
+            if result is MoveResult.LOSS:
+                root_scores.append(RootMoveScore(move=move, score=-MATE_SCORE))
+                continue
+
+            undo = incremental_state.make_move(move, position.side_to_move)
+            try:
+                tt_entry = self.tt.get(_position_key(incremental_state.to_position()))
+            finally:
+                incremental_state.unmake_move(undo)
+            if tt_entry is not None:
+                root_scores.append(RootMoveScore(move=move, score=-tt_entry.score))
+
+        return tuple(sorted(root_scores, key=lambda root_score: root_score.score, reverse=True))
 
     def _aspiration_search(
         self,
