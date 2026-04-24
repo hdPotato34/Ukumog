@@ -12,6 +12,12 @@ const HOST = process.env.HOST || "0.0.0.0";
 const CLOSED_ROOM_TTL_MS = 60_000;
 const ACTIVE_SESSION_WINDOW_MS = 90_000;
 const ENGINE_REQUEST_TIMEOUT_MS = Number(process.env.ENGINE_REQUEST_TIMEOUT_MS || 15_000);
+const activeEngineChildren = new Set();
+let persistentEngineBridge = null;
+let persistentEngineBridgeBuffer = "";
+let persistentEngineBridgeStderr = "";
+let persistentEngineBridgeActive = null;
+let persistentEngineBridgeQueue = Promise.resolve();
 const INITIAL_RATING = 1000;
 const STABLE_RATING_K = 20;
 const HOT_RATING_K = 60;
@@ -98,6 +104,7 @@ async function runBridgeCommand(commandParts, requestPayload) {
         windowsHide: true,
       },
     );
+    activeEngineChildren.add(child);
 
     let stdout = "";
     let stderr = "";
@@ -107,6 +114,7 @@ async function runBridgeCommand(commandParts, requestPayload) {
       if (finished) return;
       finished = true;
       clearTimeout(timeoutId);
+      activeEngineChildren.delete(child);
       callback();
     };
 
@@ -157,7 +165,7 @@ async function runBridgeCommand(commandParts, requestPayload) {
   });
 }
 
-async function runUkumogBridge(requestPayload) {
+async function runUkumogBridgeOnce(requestPayload) {
   let missingCommand = false;
   for (const commandParts of preferredPythonCommands()) {
     try {
@@ -179,6 +187,192 @@ async function runUkumogBridge(requestPayload) {
   }
 
   throw createHttpError(503, "Ukumog engine bridge is not available.");
+}
+
+function usePersistentEngineBridge() {
+  return process.env.UKUMOG_ENGINE_PERSISTENT !== "0";
+}
+
+function clearPersistentBridgeActive(error) {
+  if (!persistentEngineBridgeActive) return;
+  const active = persistentEngineBridgeActive;
+  persistentEngineBridgeActive = null;
+  clearTimeout(active.timeoutId);
+  active.reject(error);
+}
+
+function handlePersistentBridgeLine(line) {
+  const active = persistentEngineBridgeActive;
+  if (!active) {
+    return;
+  }
+  persistentEngineBridgeActive = null;
+  clearTimeout(active.timeoutId);
+
+  let parsed = null;
+  try {
+    parsed = line.trim() ? JSON.parse(line) : null;
+  } catch {
+    parsed = null;
+  }
+
+  if (!parsed?.ok) {
+    active.reject(createHttpError(502, normalizeBridgeError(parsed?.error, "Ukumog engine request failed.")));
+    return;
+  }
+
+  active.resolve(parsed);
+}
+
+function attachPersistentBridgeHandlers(child) {
+  child.stdout.on("data", (chunk) => {
+    persistentEngineBridgeBuffer += chunk.toString("utf8");
+    let newlineIndex = persistentEngineBridgeBuffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = persistentEngineBridgeBuffer.slice(0, newlineIndex);
+      persistentEngineBridgeBuffer = persistentEngineBridgeBuffer.slice(newlineIndex + 1);
+      handlePersistentBridgeLine(line);
+      newlineIndex = persistentEngineBridgeBuffer.indexOf("\n");
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    persistentEngineBridgeStderr += chunk.toString("utf8");
+    if (persistentEngineBridgeStderr.length > 4000) {
+      persistentEngineBridgeStderr = persistentEngineBridgeStderr.slice(-4000);
+    }
+  });
+
+  child.on("close", () => {
+    activeEngineChildren.delete(child);
+    if (persistentEngineBridge === child) {
+      persistentEngineBridge = null;
+      persistentEngineBridgeBuffer = "";
+      clearPersistentBridgeActive(createHttpError(502, normalizeBridgeError(persistentEngineBridgeStderr, "Ukumog engine bridge stopped.")));
+      persistentEngineBridgeStderr = "";
+    }
+  });
+}
+
+function spawnPersistentBridge(commandParts) {
+  const engineRoot = resolveEngineRoot();
+  if (!engineRoot) {
+    throw createHttpError(
+      503,
+      "Ukumog engine bridge is not available. Add the engine repo as vendor/ukumog-engine, keep a sibling ukumog-engine checkout, or set UKUMOG_ENGINE_ROOT.",
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      commandParts[0],
+      [...commandParts.slice(1), "-m", "ukumog_engine.apps.json_bridge", "--stream"],
+      {
+        cwd: engineRoot,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
+
+    let settled = false;
+    child.once("spawn", () => {
+      settled = true;
+      activeEngineChildren.add(child);
+      attachPersistentBridgeHandlers(child);
+      resolve(child);
+    });
+    child.once("error", (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+        return;
+      }
+      clearPersistentBridgeActive(error);
+    });
+  });
+}
+
+async function ensurePersistentEngineBridge() {
+  if (persistentEngineBridge && !persistentEngineBridge.killed) {
+    return persistentEngineBridge;
+  }
+
+  let missingCommand = false;
+  for (const commandParts of preferredPythonCommands()) {
+    try {
+      persistentEngineBridge = await spawnPersistentBridge(commandParts);
+      persistentEngineBridgeBuffer = "";
+      persistentEngineBridgeStderr = "";
+      return persistentEngineBridge;
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        missingCommand = true;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (missingCommand) {
+    throw createHttpError(
+      503,
+      "Python was not found for the Ukumog engine bridge. Install Python 3.11+ or set UKUMOG_PYTHON.",
+    );
+  }
+  throw createHttpError(503, "Ukumog engine bridge is not available.");
+}
+
+async function runPersistentBridgeRequest(requestPayload) {
+  const child = await ensurePersistentEngineBridge();
+  if (persistentEngineBridgeActive) {
+    throw createHttpError(503, "Ukumog engine bridge is busy.");
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      if (persistentEngineBridge === child) {
+        persistentEngineBridge = null;
+      }
+      persistentEngineBridgeBuffer = "";
+      clearPersistentBridgeActive(createHttpError(504, "Ukumog engine request timed out."));
+      child.kill();
+    }, ENGINE_REQUEST_TIMEOUT_MS);
+
+    persistentEngineBridgeActive = { resolve, reject, timeoutId };
+    child.stdin.write(`${JSON.stringify(requestPayload)}\n`, "utf8", (error) => {
+      if (error) {
+        clearPersistentBridgeActive(error);
+      }
+    });
+  });
+}
+
+async function runUkumogBridge(requestPayload) {
+  if (!usePersistentEngineBridge()) {
+    return runUkumogBridgeOnce(requestPayload);
+  }
+
+  const runQueued = () => runPersistentBridgeRequest(requestPayload);
+  persistentEngineBridgeQueue = persistentEngineBridgeQueue.catch(() => {}).then(runQueued);
+  return persistentEngineBridgeQueue;
+}
+
+function cancelActiveEngineRequests() {
+  let canceled = 0;
+  for (const child of [...activeEngineChildren]) {
+    if (!child.killed) {
+      if (child === persistentEngineBridge) {
+        persistentEngineBridge = null;
+        persistentEngineBridgeBuffer = "";
+        persistentEngineBridgeStderr = "";
+        clearPersistentBridgeActive(createHttpError(499, "Ukumog engine request canceled."));
+      }
+      child.kill();
+      canceled += 1;
+    }
+  }
+  return canceled;
 }
 
 function boardRowsFromState(state, config = {}) {
@@ -210,11 +404,30 @@ function bridgeColor(turn) {
 function resolveEngineAnalyzeOptions(input = {}) {
   const rawDepth = Number(input.depth ?? 5);
   const rawTimeMs = Number(input.timeMs ?? 1500);
+  const rawTemperature = Number(input.temperature ?? 0);
+  const rawLearnedWeight = Number(input.learnedWeight ?? input.learned_weight ?? 0.10);
   const depth = Number.isFinite(rawDepth) ? Math.max(1, Math.min(12, Math.round(rawDepth))) : 5;
   const timeMs = Number.isFinite(rawTimeMs) ? Math.max(0, Math.min(20_000, Math.round(rawTimeMs))) : 1500;
+  const temperature = Number.isFinite(rawTemperature) ? Math.max(0, Math.min(2, rawTemperature)) : 0;
+  const learnedWeight = Number.isFinite(rawLearnedWeight) ? Math.max(0, Math.min(1, rawLearnedWeight)) : 0.10;
+  const mlMode = typeof input.mlMode === "string" ? input.mlMode : typeof input.ml_mode === "string" ? input.ml_mode : "auto";
+  const device = typeof input.device === "string" ? input.device : "cpu";
+  const modelPath = typeof input.modelPath === "string" ? input.modelPath.trim() : typeof input.model_path === "string" ? input.model_path.trim() : "";
+  const requestedRootScoreMode = typeof input.rootScoreMode === "string"
+    ? input.rootScoreMode
+    : typeof input.root_score_mode === "string"
+      ? input.root_score_mode
+      : "tt";
+  const rootScoreMode = ["exact", "tt", "none"].includes(requestedRootScoreMode) ? requestedRootScoreMode : "tt";
   return {
     depth,
     timeMs,
+    temperature,
+    mlMode,
+    device,
+    modelPath,
+    learnedWeight,
+    rootScoreMode,
   };
 }
 
@@ -1783,6 +1996,13 @@ async function handleApi(req, res, pathname, searchParams) {
     return;
   }
 
+  if (pathname === "/api/engine/cache" && req.method === "POST") {
+    const canceled = cancelActiveEngineRequests();
+    const payload = await runUkumogBridge({ command: "clear_cache" });
+    writeJson(res, 200, { ...payload, canceled_active_requests: canceled });
+    return;
+  }
+
   if (pathname === "/api/engine/analyze" && req.method === "POST") {
     const body = await readJsonBody(req);
     const config = sanitizeConfig(body.config || {});
@@ -1807,6 +2027,12 @@ async function handleApi(req, res, pathname, searchParams) {
         time_ms: options.timeMs,
         analyze_root: true,
         include_move_maps: false,
+        temperature: options.temperature,
+        ml_mode: options.mlMode,
+        device: options.device,
+        learned_weight: options.learnedWeight,
+        root_score_mode: options.rootScoreMode,
+        ...(options.modelPath ? { model_path: options.modelPath } : {}),
       },
     });
     writeJson(res, 200, payload);

@@ -24,10 +24,10 @@ import {
   promoteNodePathToMain,
   replayRecord,
 } from "./game-record.mjs";
-import { analyzePositionWithEngine } from "./app-client.mjs";
+import { analyzePositionWithEngine, clearEngineCache } from "./app-client.mjs";
 import { copyTextToClipboard } from "./online-room.mjs";
 
-const BASE_CSS = `@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');*{box-sizing:border-box}button,input{transition:all .15s ease}button,input,textarea{font:inherit}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}.tb-btn:hover:not(:disabled){color:#c8b060!important;border-color:#6a5030!important}.ng-btn:hover:not(:disabled),.start-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}.menu-btn:hover{color:#a89060!important;border-color:#4a3820!important}.panel-input:focus{outline:none;border-color:#8d713e!important;box-shadow:0 0 0 2px rgba(232,201,106,.08)}`;
+const BASE_CSS = `@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');*{box-sizing:border-box}button,input{transition:all .15s ease}button,input,textarea,select{font:inherit}.review-main-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,360px);gap:14px;align-items:start}.review-board-stack{display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;align-items:stretch}.review-side-scroll{max-height:calc(100vh - 110px);overflow:auto;padding-right:2px}.review-panel-scroll{max-height:calc(100vh - 450px);overflow:auto}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}.tb-btn:hover:not(:disabled){color:#c8b060!important;border-color:#6a5030!important}.ng-btn:hover:not(:disabled),.start-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}.menu-btn:hover{color:#a89060!important;border-color:#4a3820!important}.panel-input:focus{outline:none;border-color:#8d713e!important;box-shadow:0 0 0 2px rgba(232,201,106,.08)}@media (max-width:980px){.review-main-grid{grid-template-columns:1fr}.review-side-scroll{max-height:none;overflow:visible}.review-panel-scroll{max-height:280px}.review-board-stack{grid-template-columns:24px minmax(0,1fr)}}@media (max-width:560px){.review-board-stack{grid-template-columns:1fr}.review-board-stack .eval-bar{height:18px;min-height:18px}}`;
 
 const shellStyle = {
   minHeight: "100vh",
@@ -188,7 +188,7 @@ function distanceToSegment(pointX, pointY, startX, startY, endX, endY) {
   return Math.hypot(pointX - projectedX, pointY - projectedY);
 }
 
-function Board({ config, state, canPlace, onPlace, annotationScopeKey = "board", annotationResetToken = 0 }) {
+function Board({ config, state, canPlace, onPlace, annotationScopeKey = "board", annotationResetToken = 0, bestMove = null }) {
   const boardSize = config.boardSize;
   const size = (boardSize - 1) * CELL + 2 * MARGIN;
   const stars = starPoints(boardSize);
@@ -375,6 +375,17 @@ function Board({ config, state, canPlace, onPlace, annotationScopeKey = "board",
             <g pointerEvents="none" filter="url(#annotationGlow)">
               <circle cx={center.x} cy={center.y} r={PR + 3.8} fill="none" stroke="rgba(97,60,18,0.46)" strokeWidth={5} strokeDasharray="10 7" />
               <circle cx={center.x} cy={center.y} r={PR + 2.5} fill="none" stroke="rgba(240,205,128,0.94)" strokeWidth={2.6} strokeDasharray="10 7" />
+            </g>
+          );
+        })() : null}
+        {bestMove && Number.isInteger(bestMove.row) && Number.isInteger(bestMove.col) && !state.board?.[bestMove.row]?.[bestMove.col] ? (() => {
+          const center = boardPixelPoint(bestMove.row, bestMove.col);
+          return (
+            <g pointerEvents="none" filter="url(#annotationGlow)">
+              <circle cx={center.x} cy={center.y} r={PR + 3.5} fill="rgba(13,17,23,0.18)" stroke="rgba(255,246,216,0.72)" strokeWidth={1.4} />
+              <circle cx={center.x} cy={center.y} r={PR - 5} fill="none" stroke={GOLD} strokeWidth={3} />
+              <line x1={center.x - 6} y1={center.y} x2={center.x + 6} y2={center.y} stroke={GOLD} strokeWidth={2} strokeLinecap="round" />
+              <line x1={center.x} y1={center.y - 6} x2={center.x} y2={center.y + 6} stroke={GOLD} strokeWidth={2} strokeLinecap="round" />
             </g>
           );
         })() : null}
@@ -1151,28 +1162,274 @@ function formatEngineScore(score) {
   return `${numeric > 0 ? "+" : ""}${Math.round(numeric)}`;
 }
 
+function formatBlackObjectiveScore(score) {
+  const numeric = Number(score);
+  if (!Number.isFinite(numeric)) return "--";
+  return `B ${numeric > 0 ? "+" : ""}${Math.round(numeric)}`;
+}
+
 function formatEnginePv(moves = [], limit = 6) {
   if (!moves.length) return "--";
   const shown = moves.slice(0, limit).map((move) => formatEngineMove(move));
   return shown.join(" -> ") + (moves.length > limit ? " ..." : "");
 }
 
-function ReviewEnginePanel({ analysis, loading, error, disabledReason, onAnalyze }) {
-  const topMoves = analysis?.analysis?.root_move_scores || [];
-  const tactics = analysis?.tactics || null;
+const ENGINE_ML_MODES = [
+  { value: "auto", label: "Auto" },
+  { value: "quiet-value", label: "Quiet Value" },
+  { value: "full", label: "Full" },
+  { value: "policy-only", label: "Policy Only" },
+  { value: "root-policy", label: "Root Policy" },
+  { value: "root-hybrid", label: "Root Hybrid" },
+];
+
+function compactPanelStyle(extra = {}) {
+  return {
+    borderRadius: 8,
+    border: "1px solid #1c1810",
+    background: "#111820",
+    padding: "12px 14px",
+    ...extra,
+  };
+}
+
+function fieldStyle() {
+  return {
+    width: "100%",
+    padding: "9px 10px",
+    borderRadius: 7,
+    border: "1px solid #2e2818",
+    background: "#0c1117",
+    color: "#dcc798",
+    fontFamily: "'DM Sans'",
+    fontSize: 12,
+  };
+}
+
+function checkboxRowStyle() {
+  return {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "9px 10px",
+    borderRadius: 7,
+    border: "1px solid #241c11",
+    background: "#0e141b",
+    fontFamily: "'DM Sans'",
+    fontSize: 12,
+    color: "#d2bd92",
+  };
+}
+
+function normalizeEngineScore(score) {
+  const numeric = Number(score);
+  if (!Number.isFinite(numeric)) return 0;
+  const sign = Math.sign(numeric);
+  const scaled = Math.log1p(Math.min(Math.abs(numeric), 1_000_000) / 100) / Math.log1p(1_000_000 / 100);
+  return Math.max(-0.96, Math.min(0.96, sign * scaled));
+}
+
+function objectiveScoreForSideToMove(score, sideToMove) {
+  const numeric = Number(score);
+  if (!Number.isFinite(numeric)) return null;
+  return sideToMove === "W" ? -numeric : numeric;
+}
+
+function engineProfileKeyFromSettings(settings) {
+  return JSON.stringify({
+    modelPath: String(settings.modelPath || "").trim(),
+    mlMode: settings.mlMode || "auto",
+    temperature: Number(settings.temperature || 0),
+    device: settings.device || "cpu",
+  });
+}
+
+function engineTargetDepth(settings) {
+  return Math.max(1, Math.min(12, Math.round(Number(settings.depth) || 9)));
+}
+
+function buildEngineAnalysisEntry(nodeId, payload, state, profileKey, source = "analysis", requestedDepth = null, timeMs = null) {
+  const sideToMove = state?.turn || (payload?.position?.side_to_move === "white" ? "W" : "B");
+  const rawScore = payload?.analysis?.score;
+  const objectiveScore = objectiveScoreForSideToMove(rawScore, sideToMove);
+  const stats = payload?.analysis?.stats || {};
+  return {
+    nodeId,
+    payload,
+    rawScore,
+    objectiveScore,
+    sideToMove,
+    bestMove: payload?.analysis?.best_move || null,
+    depth: payload?.analysis?.depth ?? null,
+    profileKey,
+    source,
+    requestedDepth,
+    timeMs,
+    aborted: !!stats.aborted,
+    timeLimitAbort: !!stats.time_limit_abort,
+    updatedAt: Date.now(),
+  };
+}
+
+function shouldStoreEngineEntry(existing, nextEntry) {
+  if (!existing) return true;
+  if (existing.profileKey !== nextEntry.profileKey) return true;
+  const existingDepth = Number(existing.depth || 0);
+  const nextDepth = Number(nextEntry.depth || 0);
+  if (nextDepth > existingDepth) return true;
+  if (nextDepth < existingDepth) return false;
+  return Number(nextEntry.updatedAt || 0) >= Number(existing.updatedAt || 0);
+}
+
+function formatCompactNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "--";
+  return Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(numeric);
+}
+
+function formatStatRatio(hits, probes) {
+  const hitCount = Number(hits);
+  const probeCount = Number(probes);
+  if (!Number.isFinite(hitCount) || !Number.isFinite(probeCount) || probeCount <= 0) return "--";
+  return `${Math.round((hitCount / probeCount) * 100)}%`;
+}
+
+function formatElapsedMs(ms) {
+  const numeric = Number(ms);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0.0s";
+  return `${(numeric / 1000).toFixed(1)}s`;
+}
+
+function getMainlineNodeIds(record) {
+  const ids = [record.rootId];
+  let cursor = record.rootId;
+  while (record.nodes[cursor]?.childrenIds?.length) {
+    cursor = record.nodes[cursor].childrenIds[0];
+    ids.push(cursor);
+  }
+  return ids;
+}
+
+function ReviewEvaluationBar({ analysisEntry, show }) {
+  const score = analysisEntry?.objectiveScore;
+  const normalized = normalizeEngineScore(score);
+  const topPercent = show && Number.isFinite(Number(score)) ? Math.round((0.5 - normalized / 2) * 100) : 50;
+  const label = show ? formatBlackObjectiveScore(score) : "--";
 
   return (
-    <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px", display: "grid", gap: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start", flexWrap: "wrap" }}>
+    <div
+      className="eval-bar"
+      style={{
+        minHeight: 360,
+        borderRadius: 8,
+        border: "1px solid #241c11",
+        overflow: "hidden",
+        background: "#080a0d",
+        position: "relative",
+        boxShadow: "inset 0 0 20px rgba(0,0,0,0.55)",
+      }}
+    >
+      <div style={{ position: "absolute", inset: 0, display: "grid", gridTemplateRows: `${topPercent}% 1fr` }}>
+        <div style={{ background: "#e6decd" }} />
+        <div style={{ background: "#10151b" }} />
+      </div>
+      <div style={{ position: "absolute", left: 0, right: 0, top: `${topPercent}%`, height: 1, background: GOLD, opacity: 0.7 }} />
+      <div style={{ position: "absolute", left: 0, right: 0, bottom: 8, textAlign: "center", fontFamily: "'DM Sans'", fontSize: 10, color: "#e7cf91", textShadow: "0 1px 4px #000" }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function ReviewEvaluationGraph({ record, evaluationsByNode, currentNodeId, profileKey }) {
+  const nodeIds = getMainlineNodeIds(record);
+  const width = 320;
+  const height = 92;
+  const padding = 14;
+  const step = nodeIds.length <= 1 ? 0 : (width - padding * 2) / (nodeIds.length - 1);
+  const points = nodeIds.map((id, index) => {
+    const entry = evaluationsByNode[id]?.profileKey === profileKey ? evaluationsByNode[id] : null;
+    const normalized = normalizeEngineScore(entry?.objectiveScore);
+    return {
+      id,
+      x: padding + index * step,
+      y: height / 2 - normalized * (height / 2 - padding),
+      known: Number.isFinite(Number(entry?.objectiveScore)),
+    };
+  });
+  const knownPoints = points.filter((point) => point.known);
+  const pathData = knownPoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+
+  return (
+    <div style={compactPanelStyle({ display: "grid", gap: 8 })}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+        <div style={{ fontSize: 20, color: GOLD }}>Evaluation Graph</div>
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344" }}>{knownPoints.length}/{nodeIds.length} analyzed</div>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: 92, display: "block", borderRadius: 7, background: "#0e141b", border: "1px solid #241c11" }}>
+        <line x1={padding} y1={height / 2} x2={width - padding} y2={height / 2} stroke="#2e2818" strokeWidth={1} />
+        {pathData ? <path d={pathData} fill="none" stroke={GOLD} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" /> : null}
+        {points.map((point) => (
+          <circle
+            key={point.id}
+            cx={point.x}
+            cy={point.known ? point.y : height / 2}
+            r={point.id === currentNodeId ? 4.5 : point.known ? 3 : 2}
+            fill={point.id === currentNodeId ? "#fff2c9" : point.known ? GOLD : "#3a3020"}
+            opacity={point.known || point.id === currentNodeId ? 1 : 0.7}
+          />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function ReviewEngineSummary({
+  analysis,
+  analysisEntry,
+  loading,
+  runLabel,
+  error,
+  disabledReason,
+  graphDisabled,
+  displayOptions,
+  engineEnabled,
+  graphLoading,
+  graphProgress,
+  targetDepth,
+  runningElapsedMs,
+  runningAccumulatedNodes,
+  onToggleEngine,
+  onDrawGraph,
+  onOpenSettings,
+}) {
+  const topMoves = analysis?.analysis?.root_move_scores || [];
+  const bestMove = formatEngineMove(analysis?.analysis?.best_move);
+  const sideToMove = analysisEntry?.sideToMove || "B";
+  const stats = analysis?.analysis?.stats || {};
+  const completedDepth = Number(analysisEntry?.depth || analysis?.analysis?.depth || 0);
+  const progressPercent = targetDepth ? Math.max(0, Math.min(100, Math.round((completedDepth / targetDepth) * 100))) : 0;
+  const searchStatus = loading
+    ? runLabel || "Running engine..."
+    : analysisEntry?.timeLimitAbort
+      ? `Time limit at depth ${completedDepth || "--"}`
+      : analysisEntry?.aborted
+        ? "Search aborted"
+        : analysis
+          ? `Completed depth ${completedDepth || "--"}`
+          : "Idle";
+
+  return (
+    <div style={compactPanelStyle({ display: "grid", gap: 12 })}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
         <div>
-          <div style={{ fontSize: 22, color: GOLD, marginBottom: 6 }}>Engine Analysis</div>
-          <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#a88d59", lineHeight: 1.7 }}>
-            Current node analysis runs through the Python engine bridge. The review tree stays editable; analysis is on-demand.
+          <div style={{ fontSize: 22, color: GOLD }}>Analysis</div>
+          <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", marginTop: 2 }}>
+            {loading ? (runLabel || "Running engine...") : analysis ? `Depth ${analysisEntry?.depth ?? analysis.analysis?.depth ?? "--"}` : "Current position"}
           </div>
         </div>
-        <button className="ng-btn" onClick={onAnalyze} disabled={loading || !!disabledReason} style={actionBtn("solid", loading || !!disabledReason)}>
-          {loading ? "Analyzing..." : "Analyze Position"}
-        </button>
+        <button className="tb-btn" onClick={onOpenSettings} style={{ ...actionBtn("ghost", false), padding: "8px 12px" }}>Settings</button>
       </div>
 
       {disabledReason ? (
@@ -1182,54 +1439,78 @@ function ReviewEnginePanel({ analysis, loading, error, disabledReason, onAnalyze
         <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#dca2a2", lineHeight: 1.8 }}>{error}</div>
       ) : null}
 
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8 }}>
+        <button className="ng-btn" onClick={onToggleEngine} disabled={!!disabledReason} style={actionBtn(engineEnabled ? "solid" : "ghost", !!disabledReason)}>
+          {engineEnabled ? "Engine On" : "Engine Off"}
+        </button>
+        <button className="tb-btn" onClick={onDrawGraph} disabled={graphLoading || !!graphDisabled} style={actionBtn("ghost", graphLoading || !!graphDisabled)}>
+          {graphLoading ? "Graphing..." : "Draw Graph"}
+        </button>
+      </div>
+      {graphLoading ? (
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#8c7344" }}>Graph pass {graphProgress.done}/{graphProgress.total}</div>
+      ) : null}
+      {loading && !analysis ? (
+        <div style={{ padding: "10px 11px", borderRadius: 7, border: "1px solid #241c11", background: "#0e141b", fontFamily: "'DM Sans'", fontSize: 11, color: "#d2bd92", lineHeight: 1.6 }}>
+          Search running for target depth {targetDepth || "--"} for {formatElapsedMs(runningElapsedMs)}. Waiting for the first completed result from the bridge.
+        </div>
+      ) : null}
+
       {analysis ? (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
-            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
-              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Best Move</div>
-              <div style={{ fontSize: 24, color: GOLD, marginTop: 4 }}>{formatEngineMove(analysis.analysis?.best_move)}</div>
-            </div>
-            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
-              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Score</div>
-              <div style={{ fontSize: 24, color: "#d9c08a", marginTop: 4 }}>{formatEngineScore(analysis.analysis?.score)}</div>
-            </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+            {displayOptions.showBestMove ? (
+              <div style={{ padding: "10px 11px", borderRadius: 7, border: "1px solid #241c11", background: "#0e141b" }}>
+                <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.6, textTransform: "uppercase" }}>Best</div>
+                <div style={{ fontSize: 22, color: GOLD, marginTop: 3 }}>{bestMove}</div>
+              </div>
+            ) : null}
+            {displayOptions.showEvaluation ? (
+              <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+                <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Black Eval</div>
+                <div style={{ fontSize: 24, color: "#d9c08a", marginTop: 4 }}>{formatBlackObjectiveScore(analysisEntry?.objectiveScore)}</div>
+              </div>
+            ) : null}
             <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
               <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Depth</div>
               <div style={{ fontSize: 24, color: "#d0c7b3", marginTop: 4 }}>{analysis.analysis?.depth ?? "--"}</div>
             </div>
-            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
-              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase" }}>Nodes</div>
-              <div style={{ fontSize: 20, color: "#b8c8a9", marginTop: 6 }}>{analysis.analysis?.stats?.total_nodes ?? "--"}</div>
+          </div>
+
+          <div style={{ padding: "10px 11px", borderRadius: 7, border: "1px solid #241c11", background: "#0e141b", display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.6, textTransform: "uppercase" }}>
+              <span>Node Exploration</span>
+              <span>{searchStatus}</span>
+            </div>
+            <div style={{ height: 7, borderRadius: 999, background: "#17130d", border: "1px solid #2b2112", overflow: "hidden" }}>
+              <div style={{ width: `${progressPercent}%`, height: "100%", background: loading ? "#b89b45" : GOLD, transition: "width .2s ease" }} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontFamily: "'DM Sans'", fontSize: 11, color: "#d2bd92", lineHeight: 1.6 }}>
+              <div>Last search: {formatCompactNumber(stats.total_nodes)}</div>
+              <div>Run nodes: {formatCompactNumber(runningAccumulatedNodes)}</div>
+              <div>NPS: {formatCompactNumber(stats.nodes_per_second)}</div>
+              <div>Elapsed: {Number.isFinite(Number(stats.elapsed_seconds)) ? `${Number(stats.elapsed_seconds).toFixed(2)}s` : "--"}</div>
+              <div>TT hits: {formatStatRatio(stats.tt_hits, stats.tt_probes)}</div>
+              <div>Tactics cache: {formatStatRatio(stats.tactics_cache_hits, stats.tactics_cache_probes)}</div>
+              <div>{loading ? "Running" : "Budget"}: {loading ? formatElapsedMs(runningElapsedMs) : analysisEntry?.timeMs ? `${analysisEntry.timeMs}ms` : "unlimited"}</div>
             </div>
           </div>
 
-          <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+          <div style={{ padding: "10px 11px", borderRadius: 7, border: "1px solid #241c11", background: "#0e141b" }}>
             <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase", marginBottom: 6 }}>Principal Variation</div>
             <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d2bd92", lineHeight: 1.8 }}>
               {formatEnginePv(analysis.analysis?.principal_variation || [])}
             </div>
           </div>
 
-          {tactics ? (
-            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
-              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase", marginBottom: 6 }}>Tactical Snapshot</div>
-              <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d2bd92", lineHeight: 1.8 }}>
-                <div>Winning moves: {(tactics.winning_moves || []).length}</div>
-                <div>Forced blocks: {(tactics.forced_blocks || []).length}</div>
-                <div>Safe threats: {(tactics.safe_threats || []).length}</div>
-                <div>Double threats: {(tactics.double_threats || []).length}</div>
-              </div>
-            </div>
-          ) : null}
-
           {topMoves.length ? (
-            <div style={{ padding: "12px 13px", borderRadius: 14, border: "1px solid #241c11", background: "#0e141b" }}>
+            <div style={{ padding: "10px 11px", borderRadius: 7, border: "1px solid #241c11", background: "#0e141b" }}>
               <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase", marginBottom: 6 }}>Top Candidates</div>
               <div style={{ display: "grid", gap: 8 }}>
                 {topMoves.slice(0, 5).map((entry, index) => (
                   <div key={`${entry.move?.index || index}:${entry.score}`} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontFamily: "'DM Sans'", fontSize: 12, color: "#d2bd92" }}>
                     <span>{index + 1}. {formatEngineMove(entry.move)}</span>
-                    <span>{formatEngineScore(entry.score)}</span>
+                    <span>{formatBlackObjectiveScore(objectiveScoreForSideToMove(entry.score, sideToMove))}</span>
                   </div>
                 ))}
               </div>
@@ -1238,10 +1519,74 @@ function ReviewEnginePanel({ analysis, loading, error, disabledReason, onAnalyze
         </>
       ) : !disabledReason && !loading && !error ? (
         <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#b79b66", lineHeight: 1.8 }}>
-          Choose any non-terminal 11x11 position in the review tree and run the engine on demand.
+          Turn the engine on for live depth updates, or draw the graph for a quick mainline pass.
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ReviewEngineSettingsPanel({ open, settings, displayOptions, onSettingsChange, onDisplayChange, onClear, clearing, onClose }) {
+  if (!open) return null;
+
+  const updateSetting = (key, value) => onSettingsChange((prev) => ({ ...prev, [key]: value }));
+  const updateDisplay = (key, value) => onDisplayChange((prev) => ({ ...prev, [key]: value }));
+
+  return (
+    <ReviewModal open={open} title="Engine Controls" sub="Tune analysis and choose which review overlays are visible." onClose={onClose} width={560}>
+      <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+          <label style={{ display: "grid", gap: 6, fontFamily: "'DM Sans'", fontSize: 11, color: "#9f8554" }}>
+            Max Depth
+            <input type="number" min="1" max="12" value={settings.depth} onChange={(event) => updateSetting("depth", Number(event.target.value))} style={fieldStyle()} />
+          </label>
+          <label style={{ display: "grid", gap: 6, fontFamily: "'DM Sans'", fontSize: 11, color: "#9f8554" }}>
+            Time ms
+            <input type="number" min="0" max="20000" step="100" value={settings.timeMs} onChange={(event) => updateSetting("timeMs", Number(event.target.value))} style={fieldStyle()} />
+          </label>
+          <label style={{ display: "grid", gap: 6, fontFamily: "'DM Sans'", fontSize: 11, color: "#9f8554" }}>
+            Model
+            <input value={settings.modelPath} onChange={(event) => updateSetting("modelPath", event.target.value)} placeholder="pure search" style={fieldStyle()} />
+          </label>
+          <label style={{ display: "grid", gap: 6, fontFamily: "'DM Sans'", fontSize: 11, color: "#9f8554" }}>
+            Mode
+            <select value={settings.mlMode} onChange={(event) => updateSetting("mlMode", event.target.value)} style={fieldStyle()}>
+              {ENGINE_ML_MODES.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+            </select>
+          </label>
+          <label style={{ display: "grid", gap: 6, fontFamily: "'DM Sans'", fontSize: 11, color: "#9f8554" }}>
+            Temperature
+            <input type="number" min="0" max="2" step="0.05" value={settings.temperature} onChange={(event) => updateSetting("temperature", Number(event.target.value))} style={fieldStyle()} />
+          </label>
+          <label style={{ display: "grid", gap: 6, fontFamily: "'DM Sans'", fontSize: 11, color: "#9f8554" }}>
+            Device
+            <select value={settings.device} onChange={(event) => updateSetting("device", event.target.value)} style={fieldStyle()}>
+              <option value="cpu">CPU</option>
+              <option value="cuda">CUDA</option>
+              <option value="auto">Auto</option>
+            </select>
+          </label>
+        </div>
+
+        <div style={{ display: "grid", gap: 8 }}>
+          {[
+            ["showEvaluation", "Show evaluation"],
+            ["showBestMove", "Show best move"],
+            ["showEvalGraph", "Show evaluation graph"],
+          ].map(([key, label]) => (
+            <label key={key} style={checkboxRowStyle()}>
+              <span>{label}</span>
+              <input type="checkbox" checked={!!displayOptions[key]} onChange={(event) => updateDisplay(key, event.target.checked)} />
+            </label>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <button className="tb-btn" onClick={onClear} disabled={clearing} style={actionBtn("ghost", clearing)}>{clearing ? "Clearing..." : "Clear Cache"}</button>
+          <button className="ng-btn" onClick={onClose} style={actionBtn("solid", false)}>Done</button>
+        </div>
+      </div>
+    </ReviewModal>
   );
 }
 
@@ -1256,7 +1601,47 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   const [engineAnalysis, setEngineAnalysis] = useState(null);
   const [engineError, setEngineError] = useState("");
   const [engineLoading, setEngineLoading] = useState(false);
-  const engineAbortRef = useRef(null);
+  const [engineEnabled, setEngineEnabled] = useState(false);
+  const [engineRunLabel, setEngineRunLabel] = useState("");
+  const [engineRunStartedAt, setEngineRunStartedAt] = useState(null);
+  const [engineRunElapsedMs, setEngineRunElapsedMs] = useState(0);
+  const [engineRunAccumulatedNodes, setEngineRunAccumulatedNodes] = useState(0);
+  const [engineGraphLoading, setEngineGraphLoading] = useState(false);
+  const [engineGraphProgress, setEngineGraphProgress] = useState({ done: 0, total: 0 });
+  const [engineSettingsOpen, setEngineSettingsOpen] = useState(false);
+  const [engineCacheClearing, setEngineCacheClearing] = useState(false);
+  const [engineSettings, setEngineSettings] = useState({
+    depth: 9,
+    timeMs: 1500,
+    modelPath: "",
+    mlMode: "auto",
+    temperature: 0,
+    device: "cpu",
+  });
+  const [engineDisplayOptions, setEngineDisplayOptions] = useState({
+    showEvaluation: true,
+    showBestMove: true,
+    showEvalGraph: true,
+  });
+  const [engineEvaluationsByNode, setEngineEvaluationsByNode] = useState({});
+  const engineProfileKey = engineProfileKeyFromSettings(engineSettings);
+  const liveEngineAbortRef = useRef(null);
+  const graphEngineAbortRef = useRef(null);
+  const activeNodeIdRef = useRef(activeNodeId);
+  const engineEvaluationsRef = useRef(engineEvaluationsByNode);
+  const engineProfileKeyRef = useRef(engineProfileKey);
+
+  useEffect(() => {
+    activeNodeIdRef.current = activeNodeId;
+  }, [activeNodeId]);
+
+  useEffect(() => {
+    engineEvaluationsRef.current = engineEvaluationsByNode;
+  }, [engineEvaluationsByNode]);
+
+  useEffect(() => {
+    engineProfileKeyRef.current = engineProfileKey;
+  }, [engineProfileKey]);
 
   useEffect(() => {
     if (!feedback) return undefined;
@@ -1265,21 +1650,47 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
   }, [feedback]);
 
   useEffect(() => {
+    if (!engineLoading || !engineRunStartedAt) {
+      return undefined;
+    }
+    const tick = () => setEngineRunElapsedMs(Date.now() - engineRunStartedAt);
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [engineLoading, engineRunStartedAt]);
+
+  useEffect(() => {
     setActiveNodeId(currentNodeId || findDeepestMainlineNode(record));
+  }, [record.id, currentNodeId]);
+
+  useEffect(() => {
     setSaveTitle(record.meta?.title || "");
+  }, [record.meta?.title]);
+
+  useEffect(() => {
+    abortLiveEngineRun();
+    abortGraphEngineRun();
     setAnnotationResetToken(0);
-  }, [record, currentNodeId]);
+    setEngineAnalysis(null);
+    engineEvaluationsRef.current = {};
+    setEngineEvaluationsByNode({});
+    setEngineGraphProgress({ done: 0, total: 0 });
+  }, [record.id]);
 
   useEffect(() => () => {
-    if (engineAbortRef.current) {
-      engineAbortRef.current.abort();
-      engineAbortRef.current = null;
+    if (liveEngineAbortRef.current) {
+      liveEngineAbortRef.current.abort();
+      liveEngineAbortRef.current = null;
+    }
+    if (graphEngineAbortRef.current) {
+      graphEngineAbortRef.current.abort();
+      graphEngineAbortRef.current = null;
     }
   }, []);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.target && ["INPUT", "TEXTAREA"].includes(event.target.tagName)) {
+      if (event.target && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) {
         return;
       }
       if (event.key === "ArrowLeft") {
@@ -1339,14 +1750,34 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
       : "";
 
   useEffect(() => {
-    if (engineAbortRef.current) {
-      engineAbortRef.current.abort();
-      engineAbortRef.current = null;
+    if (liveEngineAbortRef.current) {
+      liveEngineAbortRef.current.abort();
+      liveEngineAbortRef.current = null;
     }
+    const cached = engineEvaluationsRef.current[activeNodeId];
+    const matchingCached = cached?.profileKey === engineProfileKey ? cached : null;
     setEngineLoading(false);
-    setEngineAnalysis(null);
+    setEngineRunLabel("");
+    setEngineRunStartedAt(null);
+    setEngineRunElapsedMs(0);
+    setEngineRunAccumulatedNodes(0);
+    setEngineAnalysis(matchingCached?.payload || null);
     setEngineError("");
-  }, [record, activeNodeId]);
+    if (engineEnabled && !engineDisabledReason) {
+      void runProgressiveAnalysis(activeNodeId, replay.state);
+    }
+  }, [
+    record.id,
+    activeNodeId,
+    engineEnabled,
+    engineSettings.depth,
+    engineSettings.timeMs,
+    engineSettings.modelPath,
+    engineSettings.mlMode,
+    engineSettings.temperature,
+    engineSettings.device,
+    engineProfileKey,
+  ]);
 
   const persistRecord = async (nextRecord, message, nextNodeId = activeNodeId) => {
     const saved = await onSaveRecord(nextRecord);
@@ -1412,58 +1843,252 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
     await persistRecord(promoted, "Current branch promoted to the main line.");
   };
 
-  const handleAnalyzePosition = async () => {
-    if (engineDisabledReason) {
-      setEngineAnalysis(null);
-      setEngineError(engineDisabledReason);
+  const abortLiveEngineRun = () => {
+    if (liveEngineAbortRef.current) {
+      liveEngineAbortRef.current.abort();
+      liveEngineAbortRef.current = null;
+    }
+  };
+
+  const abortGraphEngineRun = () => {
+    if (graphEngineAbortRef.current) {
+      graphEngineAbortRef.current.abort();
+      graphEngineAbortRef.current = null;
+    }
+  };
+
+  const cacheEngineAnalysis = (nodeId, payload, state, source = "analysis", profileKey = engineProfileKeyRef.current, requestedDepth = null, timeMs = null) => {
+    const entry = buildEngineAnalysisEntry(nodeId, payload, state, profileKey, source, requestedDepth, timeMs);
+    const existing = engineEvaluationsRef.current[nodeId];
+    const isStaleProfileResult = entry.profileKey !== engineProfileKeyRef.current && existing?.profileKey === engineProfileKeyRef.current;
+    const storedEntry = !isStaleProfileResult && shouldStoreEngineEntry(existing, entry) ? entry : existing;
+    if (storedEntry === entry) {
+      const next = {
+        ...engineEvaluationsRef.current,
+        [nodeId]: entry,
+      };
+      engineEvaluationsRef.current = next;
+      setEngineEvaluationsByNode(next);
+    }
+    if (nodeId === activeNodeIdRef.current && storedEntry?.profileKey === engineProfileKeyRef.current) {
+      setEngineAnalysis(storedEntry.payload);
+    }
+    return storedEntry;
+  };
+
+  const analyzeNodeAtDepth = async (state, depth, signal, options = {}) => {
+    const settings = options.settings || engineSettings;
+    return analyzePositionWithEngine(
+      {
+        config: record.config,
+        state,
+        engine: {
+          depth,
+          timeMs: settings.timeMs,
+          modelPath: settings.modelPath,
+          mlMode: settings.mlMode,
+          temperature: settings.temperature,
+          device: settings.device,
+          rootScoreMode: "tt",
+        },
+      },
+      { signal },
+    );
+  };
+
+  const runProgressiveAnalysis = async (nodeId, state) => {
+    if (!engineSupported || state.result) {
+      return;
+    }
+    abortLiveEngineRun();
+
+    const cached = engineEvaluationsRef.current[nodeId];
+    const matchingCached = cached?.profileKey === engineProfileKeyRef.current ? cached : null;
+    const maxDepth = engineTargetDepth(engineSettings);
+    const cachedDepth = Number(matchingCached?.depth || 0);
+    if (cachedDepth >= maxDepth) {
+      if (nodeId === activeNodeIdRef.current) {
+        setEngineAnalysis(matchingCached.payload);
+      }
       return;
     }
 
-    if (engineAbortRef.current) {
-      engineAbortRef.current.abort();
+    const quickDepth = Math.min(4, maxDepth);
+    const requestedDepths = [];
+    if (cachedDepth < quickDepth && maxDepth > quickDepth) {
+      requestedDepths.push(quickDepth);
+      for (let depth = quickDepth + 1; depth <= maxDepth; depth += 1) {
+        requestedDepths.push(depth);
+      }
+    } else {
+      const startDepth = cachedDepth > 0 ? cachedDepth + 1 : maxDepth;
+      for (let depth = startDepth; depth <= maxDepth; depth += 1) {
+        requestedDepths.push(depth);
+      }
     }
 
     const controller = new AbortController();
-    engineAbortRef.current = controller;
+    liveEngineAbortRef.current = controller;
     setEngineLoading(true);
+    setEngineRunElapsedMs(0);
+    setEngineRunAccumulatedNodes(0);
     setEngineError("");
 
     try {
-      const payload = await analyzePositionWithEngine(
-        {
-          config: record.config,
-          state: replay.state,
-          engine: {
-            depth: 5,
-            timeMs: 1500,
-          },
-        },
-        { signal: controller.signal },
-      );
-      if (engineAbortRef.current !== controller) {
-        return;
+      for (const depth of requestedDepths) {
+        setEngineRunLabel(`Depth ${depth}/${maxDepth}`);
+        setEngineRunStartedAt(Date.now());
+        const payload = await analyzeNodeAtDepth(state, depth, controller.signal);
+        if (liveEngineAbortRef.current !== controller) {
+          return;
+        }
+        const stored = cacheEngineAnalysis(nodeId, payload, state, "live", engineProfileKeyRef.current, depth, engineSettings.timeMs);
+        setEngineRunAccumulatedNodes((previous) => previous + Number(payload?.analysis?.stats?.total_nodes || 0));
+        if (Number(stored?.depth || 0) >= maxDepth) {
+          break;
+        }
       }
-      engineAbortRef.current = null;
-      setEngineAnalysis(payload);
+      if (liveEngineAbortRef.current === controller) {
+        liveEngineAbortRef.current = null;
+      }
       setEngineLoading(false);
+      setEngineRunLabel("");
+      setEngineRunStartedAt(null);
+      setEngineRunElapsedMs(0);
     } catch (error) {
       if (controller.signal.aborted) {
         return;
       }
-      if (engineAbortRef.current === controller) {
-        engineAbortRef.current = null;
+      if (liveEngineAbortRef.current === controller) {
+        liveEngineAbortRef.current = null;
       }
-      setEngineAnalysis(null);
       setEngineError(error instanceof Error ? error.message : "Could not analyze the current position.");
       setEngineLoading(false);
+      setEngineRunLabel("");
+      setEngineRunStartedAt(null);
+      setEngineRunElapsedMs(0);
+      setEngineRunAccumulatedNodes(0);
     }
   };
+
+  const handleToggleEngine = () => {
+    if (engineEnabled) {
+      abortLiveEngineRun();
+      setEngineEnabled(false);
+      setEngineLoading(false);
+      setEngineRunLabel("");
+      setEngineRunStartedAt(null);
+      setEngineRunElapsedMs(0);
+      setEngineRunAccumulatedNodes(0);
+      return;
+    }
+    setEngineEnabled(true);
+  };
+
+  const handleDrawEvaluationGraph = async () => {
+    if (!engineSupported) {
+      setEngineError(`Engine analysis currently supports only 11x11 records. This record is ${record.config.boardSize}x${record.config.boardSize}.`);
+      return;
+    }
+    if (engineGraphLoading) {
+      return;
+    }
+    abortGraphEngineRun();
+
+    const graphSettings = { ...engineSettings };
+    const graphProfileKey = engineProfileKeyFromSettings(graphSettings);
+    const nodeIds = getMainlineNodeIds(record);
+    const analyzable = nodeIds
+      .map((nodeId) => ({ nodeId, replay: replayRecord(record, nodeId) }))
+      .filter((entry) => !entry.replay.state.result);
+    const controller = new AbortController();
+    graphEngineAbortRef.current = controller;
+    setEngineGraphLoading(true);
+    setEngineError("");
+    setEngineGraphProgress({ done: 0, total: analyzable.length });
+
+    try {
+      let done = 0;
+      for (const entry of analyzable) {
+        const cached = engineEvaluationsRef.current[entry.nodeId];
+        const matchingCached = cached?.profileKey === graphProfileKey ? cached : null;
+        const cachedDepth = Number(matchingCached?.depth || 0);
+        const alreadySpentGraphBudget = matchingCached?.source === "graph"
+          && Number(matchingCached.requestedDepth || 0) >= 5
+          && matchingCached.timeLimitAbort
+          && Number(matchingCached.timeMs || 0) >= Number(graphSettings.timeMs || 0);
+        if (cachedDepth < 5 && !alreadySpentGraphBudget) {
+          const payload = await analyzeNodeAtDepth(entry.replay.state, 5, controller.signal, { settings: graphSettings });
+          if (graphEngineAbortRef.current !== controller) {
+            return;
+          }
+          cacheEngineAnalysis(entry.nodeId, payload, entry.replay.state, "graph", graphProfileKey, 5, graphSettings.timeMs);
+        }
+        done += 1;
+        setEngineGraphProgress({ done, total: analyzable.length });
+      }
+      if (graphEngineAbortRef.current === controller) {
+        graphEngineAbortRef.current = null;
+      }
+      setEngineGraphLoading(false);
+      const cached = engineEvaluationsRef.current[activeNodeIdRef.current];
+      if (cached?.profileKey === engineProfileKeyRef.current) {
+        setEngineAnalysis(cached.payload);
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (graphEngineAbortRef.current === controller) {
+        graphEngineAbortRef.current = null;
+      }
+      setEngineError(error instanceof Error ? error.message : "Could not draw the evaluation graph.");
+      setEngineGraphLoading(false);
+    }
+  };
+
+  const handleClearEngineCache = async () => {
+    abortLiveEngineRun();
+    abortGraphEngineRun();
+    setEngineEnabled(false);
+    setEngineCacheClearing(true);
+    setEngineLoading(false);
+    setEngineGraphLoading(false);
+    setEngineAnalysis(null);
+    setEngineError("");
+    setEngineRunLabel("");
+    setEngineRunStartedAt(null);
+    setEngineRunElapsedMs(0);
+    setEngineRunAccumulatedNodes(0);
+    setEngineGraphProgress({ done: 0, total: 0 });
+    const nodeIdToClear = activeNodeIdRef.current;
+    const nextEvaluations = { ...engineEvaluationsRef.current };
+    delete nextEvaluations[nodeIdToClear];
+    engineEvaluationsRef.current = nextEvaluations;
+    setEngineEvaluationsByNode(nextEvaluations);
+    try {
+      await clearEngineCache();
+      setFeedback("Engine cache cleared for this position.");
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "Could not clear the engine cache.");
+    } finally {
+      setEngineCacheClearing(false);
+    }
+  };
+
+  const cachedCurrentEntry = engineEvaluationsByNode[activeNodeId];
+  const currentEngineEntry = cachedCurrentEntry?.profileKey === engineProfileKey
+    ? cachedCurrentEntry
+    : engineAnalysis
+      ? buildEngineAnalysisEntry(activeNodeId, engineAnalysis, replay.state, engineProfileKey, "display", engineSettings.depth, engineSettings.timeMs)
+      : null;
+  const displayedBestMove = engineDisplayOptions.showBestMove ? currentEngineEntry?.bestMove : null;
 
   return (
     <div style={{ ...shellStyle, paddingTop: 18 }}>
       <style>{BASE_CSS}</style>
       <ReviewToast message={feedback} />
-      <div style={{ width: "100%", maxWidth: 1200, display: "grid", gap: 18 }}>
+      <div style={{ width: "100%", maxWidth: 1280, display: "grid", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <button className="menu-btn" onClick={onBack} style={{ background: "transparent", border: "1px solid #2a2018", color: "#5a4a28", fontFamily: "'DM Sans'", fontSize: 9, letterSpacing: 2, textTransform: "uppercase", padding: "6px 13px", borderRadius: 4, cursor: "pointer" }}>{"<- Back"}</button>
           <div style={{ flex: "1 1 240px", fontSize: 26, color: GOLD }}>{record.meta?.title || "Review"}</div>
@@ -1477,8 +2102,8 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(280px, 360px)", gap: 18, alignItems: "start" }}>
-          <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: 18 }}>
+        <div className="review-main-grid">
+          <div style={compactPanelStyle({ padding: 14 })}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
               <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#b99b64", lineHeight: 1.7 }}>
                 <div>{record.config.boardSize} x {record.config.boardSize} | {formatClockSetting(record.config)}</div>
@@ -1488,8 +2113,11 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
                 {canBranch ? "Click an empty intersection to branch from the current position." : "This line has already ended. Move backward to branch earlier."}
               </div>
             </div>
-            <Board config={record.config} state={replay.state} canPlace={canBranch} onPlace={handleAddVariation} annotationScopeKey={record.id || record.meta?.gameId || record.meta?.title || "review"} annotationResetToken={annotationResetToken} />
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 14 }}>
+            <div className="review-board-stack" style={engineDisplayOptions.showEvaluation ? undefined : { gridTemplateColumns: "minmax(0, 1fr)" }}>
+              {engineDisplayOptions.showEvaluation ? <ReviewEvaluationBar analysisEntry={currentEngineEntry} show={engineDisplayOptions.showEvaluation} /> : null}
+              <Board config={record.config} state={replay.state} canPlace={canBranch} onPlace={handleAddVariation} annotationScopeKey={record.id || record.meta?.gameId || record.meta?.title || "review"} annotationResetToken={annotationResetToken} bestMove={displayedBestMove} />
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 12 }}>
               <button className="tb-btn" onClick={() => setActiveNodeId(record.rootId)} style={actionBtn("ghost", false)}>Start</button>
               <button className="tb-btn" onClick={() => {
                 if (path.length > 1) setActiveNodeId(path[path.length - 2]);
@@ -1506,16 +2134,38 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
             </div>
           </div>
 
-          <div style={{ display: "grid", gap: 16 }}>
-            <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px" }}>
+          <div className="review-side-scroll" style={{ display: "grid", gap: 10 }}>
+            <ReviewEngineSummary
+              analysis={engineAnalysis}
+              analysisEntry={currentEngineEntry}
+              loading={engineLoading}
+              runLabel={engineRunLabel}
+              error={engineError}
+              disabledReason={engineDisabledReason}
+              graphDisabled={!engineSupported}
+              displayOptions={engineDisplayOptions}
+              engineEnabled={engineEnabled}
+              graphLoading={engineGraphLoading}
+              graphProgress={engineGraphProgress}
+              targetDepth={engineTargetDepth(engineSettings)}
+              runningElapsedMs={engineRunElapsedMs}
+              runningAccumulatedNodes={engineRunAccumulatedNodes}
+              onToggleEngine={handleToggleEngine}
+              onDrawGraph={() => { void handleDrawEvaluationGraph(); }}
+              onOpenSettings={() => setEngineSettingsOpen(true)}
+            />
+            {engineDisplayOptions.showEvalGraph ? <ReviewEvaluationGraph record={record} evaluationsByNode={engineEvaluationsByNode} currentNodeId={activeNodeId} profileKey={engineProfileKey} /> : null}
+            <div style={compactPanelStyle()}>
               <div style={{ fontSize: 22, color: GOLD, marginBottom: 10 }}>Move Trail</div>
-              <ReviewMoveList record={record} currentNodeId={activeNodeId} onJump={setActiveNodeId} />
+              <div className="review-panel-scroll">
+                <ReviewMoveList record={record} currentNodeId={activeNodeId} onJump={setActiveNodeId} />
+              </div>
             </div>
-            <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px" }}>
+            <div style={compactPanelStyle()}>
               <div style={{ fontSize: 22, color: GOLD, marginBottom: 10 }}>Branches</div>
               <ReviewBranchPanel record={record} currentNodeId={activeNodeId} onJump={setActiveNodeId} />
             </div>
-            <div style={{ borderRadius: 18, border: "1px solid #1c1810", background: "#111820", padding: "16px 18px" }}>
+            <div style={compactPanelStyle()}>
               <div style={{ fontSize: 22, color: GOLD, marginBottom: 10 }}>Current Position</div>
               <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#d2bd92", lineHeight: 1.8 }}>
                 <div>Node: {activeNodeId === record.rootId ? "Start" : activeNodeId}</div>
@@ -1526,16 +2176,19 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
                 <div>Shortcuts: Left/Right move, Up/Down branch, Home/End jump.</div>
               </div>
             </div>
-            <ReviewEnginePanel
-              analysis={engineAnalysis}
-              loading={engineLoading}
-              error={engineError}
-              disabledReason={engineDisabledReason}
-              onAnalyze={() => { void handleAnalyzePosition(); }}
-            />
           </div>
         </div>
       </div>
+      <ReviewEngineSettingsPanel
+        open={engineSettingsOpen}
+        settings={engineSettings}
+        displayOptions={engineDisplayOptions}
+        onSettingsChange={setEngineSettings}
+        onDisplayChange={setEngineDisplayOptions}
+        onClear={() => { void handleClearEngineCache(); }}
+        clearing={engineCacheClearing}
+        onClose={() => setEngineSettingsOpen(false)}
+      />
       <ReviewModal open={importOpen} title="Import Record" sub="Paste Anti-Gomoku PGN text here. The imported tree will replace the current review record." onClose={() => setImportOpen(false)}>
         <div style={{ display: "grid", gap: 12 }}>
           <textarea value={importText} onChange={(event) => setImportText(event.target.value)} placeholder={'[Format "AntiGomokuPGN/1"]'} style={{ minHeight: 260, resize: "vertical", width: "100%", padding: "12px 14px", borderRadius: 12, border: "1px solid #2e2818", background: "#0c1117", color: "#dcc798", fontFamily: "'DM Sans'", fontSize: 12, lineHeight: 1.7 }} />

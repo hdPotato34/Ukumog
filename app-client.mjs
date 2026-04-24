@@ -148,3 +148,10 @@ export async function analyzePositionWithEngine(payload, { signal } = {}) {
     signal,
   });
 }
+
+export async function clearEngineCache() {
+  return apiRequest(baseUrl(), "/api/engine/cache", {
+    method: "POST",
+    body: {},
+  });
+}
