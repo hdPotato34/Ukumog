@@ -431,6 +431,14 @@ function resolveEngineAnalyzeOptions(input = {}) {
   };
 }
 
+function normalizeEngineMatchOptions(input = {}) {
+  const options = resolveEngineAnalyzeOptions(input);
+  return {
+    depth: options.depth,
+    timeMs: options.timeMs,
+  };
+}
+
 function resolveStaticRoot() {
   const candidates = [
     path.join(process.cwd(), "site"),
@@ -857,6 +865,30 @@ function participantFromViewer(viewer) {
   }, viewer.rating ?? null, viewer.ratedGames ?? null);
 }
 
+function engineParticipant(engineOptions) {
+  return decorateIdentityWithRating({
+    sessionToken: "",
+    sessionKind: "engine",
+    authenticated: false,
+    anonymous: false,
+    userId: null,
+    loginId: "ukumog-engine",
+    displayName: `Ukumog Engine D${engineOptions.depth}`,
+    createdAt: new Date().toISOString(),
+    engine: true,
+    rating: null,
+    ratedGames: null,
+  });
+}
+
+function isEngineRoom(room) {
+  return room?.kind === "engine";
+}
+
+function isEngineRole(room, role) {
+  return isEngineRoom(room) && role === "guest";
+}
+
 function publicParticipant(participant) {
   if (!participant) return null;
   return decorateIdentityWithRating({
@@ -982,6 +1014,9 @@ function applyFinishedGameRatings(room) {
   if (!game || !game.result) {
     return null;
   }
+  if (isEngineRoom(room)) {
+    return null;
+  }
 
   const hostUser = room.hostPlayer?.userId ? findUserById(room.hostPlayer.userId) : null;
   const guestUser = room.guestPlayer?.userId ? findUserById(room.guestPlayer.userId) : null;
@@ -1063,6 +1098,9 @@ function buildCurrentGameSummary(room) {
 }
 
 function startNewGame(room) {
+  if (isEngineRoom(room)) {
+    cancelPendingEngineMove(room);
+  }
   const startedAt = new Date().toISOString();
   const seats = assignSeatsForGame(room);
   const game = {
@@ -1086,9 +1124,12 @@ function startNewGame(room) {
   room.currentGame = game;
   room.gameState = createMatchState(room.config);
   room.phase = "active";
+  room.leftRoles = { host: false, guest: false };
+  room.engineError = "";
   resetNegotiationState(room);
   room.updatedAt = startedAt;
   restartTimer(room);
+  scheduleEngineMove(room);
   return game;
 }
 
@@ -1197,6 +1238,39 @@ function undoLastMove(room) {
   restartTimer(room);
 }
 
+function undoEngineTakeback(room, role) {
+  if (!isEngineRoom(room) || !role || isEngineRole(room, role)) {
+    throw createHttpError(409, "Takeback is not available.");
+  }
+  cancelPendingEngineMove(room);
+  const humanColor = colorForRole(room.currentGame, role);
+  if (!humanColor) {
+    throw createHttpError(409, "Takeback is not available.");
+  }
+
+  let steps = 1;
+  if (room.gameState?.turn === humanColor && room.currentGame?.moves?.length >= 2) {
+    steps = 2;
+  }
+
+  for (let index = 0; index < steps; index += 1) {
+    if (!room.currentGame?.historyStates?.length || !room.currentGame.moves.length) {
+      if (index === 0) {
+        throw createHttpError(409, "There is no move to take back.");
+      }
+      break;
+    }
+    room.gameState = room.currentGame.historyStates.pop();
+    room.currentGame.moves.pop();
+  }
+
+  room.phase = "active";
+  room.updatedAt = new Date().toISOString();
+  clearLiveRequests(room);
+  restartTimer(room);
+  scheduleEngineMove(room);
+}
+
 function resolveRoomActionRequest(room, role, kind, operation = "request") {
   if (!room || !role) {
     throw createHttpError(409, "This room action is not available.");
@@ -1212,6 +1286,19 @@ function resolveRoomActionRequest(room, role, kind, operation = "request") {
   }
   if ((kind === "draw" || kind === "takeback") && room.phase !== "active") {
     throw createHttpError(409, `${kind === "draw" ? "Draw" : "Takeback"} requests are only available during an active game.`);
+  }
+  if (isEngineRoom(room)) {
+    if (kind === "draw") {
+      throw createHttpError(409, "Draws are not available against the engine.");
+    }
+    if (kind === "rematch") {
+      startNewGame(room);
+      return;
+    }
+    if (kind === "takeback") {
+      undoEngineTakeback(room, role);
+      return;
+    }
   }
 
   const actionState = room.requests?.[kind] || createActionState();
@@ -1315,11 +1402,11 @@ function findRoomAccess(roomId, viewer) {
     return { room: null, role: null, mode: null };
   }
 
-  if (participantMatchesViewer(room.hostPlayer, viewer)) {
+  if (!roleHasLeft(room, "host") && participantMatchesViewer(room.hostPlayer, viewer)) {
     syncParticipantFromViewer(room.hostPlayer, viewer);
     return { room, role: "host", mode: "host" };
   }
-  if (participantMatchesViewer(room.guestPlayer, viewer)) {
+  if (!roleHasLeft(room, "guest") && participantMatchesViewer(room.guestPlayer, viewer)) {
     syncParticipantFromViewer(room.guestPlayer, viewer);
     return { room, role: "guest", mode: "guest" };
   }
@@ -1367,6 +1454,8 @@ function buildRoomSummary(room, viewer = null) {
 
   return {
     id: room.id,
+    kind: room.kind || "online",
+    engineOptions: room.engineOptions || null,
     phase: room.phase,
     visibility: room.visibility,
     publicVisible: !!room.publicVisible,
@@ -1395,6 +1484,9 @@ function roomNotice(room, access) {
   const role = access?.role || null;
 
   if (role && room.phase === "active") {
+    if (isEngineRoom(room) && room.engineError) {
+      return `${roomLabel}. ${room.engineError}`;
+    }
     if (actionRequestedByOpponent(room.requests?.takeback, role)) {
       return `${roomLabel}. Opponent requested a takeback.`;
     }
@@ -1458,13 +1550,20 @@ function snapshotFor(room, access, viewer) {
 
 function createRoom(config, hostViewer, options = {}) {
   const roomId = generateRoomId();
+  const engineOptions = options.engine ? normalizeEngineMatchOptions(options.engine) : null;
   const room = {
     id: roomId,
+    kind: engineOptions ? "engine" : "online",
     hostPlayer: participantFromViewer(hostViewer),
-    guestPlayer: null,
+    guestPlayer: engineOptions ? engineParticipant(engineOptions) : null,
     invitedUserId: options.invitedUserId || null,
-    visibility: options.invitedUserId ? "invite" : "public",
+    visibility: engineOptions ? "engine" : options.invitedUserId ? "invite" : "public",
     publicVisible: options.publicVisible !== false,
+    engineOptions,
+    engineMovePending: false,
+    engineMoveToken: 0,
+    engineMoveTimerId: null,
+    leftRoles: { host: false, guest: false },
     config: sanitizeConfig(config),
     gameState: null,
     phase: "waiting",
@@ -1486,6 +1585,9 @@ function createRoom(config, hostViewer, options = {}) {
   };
 
   rooms.set(roomId, room);
+  if (engineOptions) {
+    startNewGame(room);
+  }
   return room;
 }
 
@@ -1495,6 +1597,7 @@ function closeRoom(room, hostMessage, guestMessage, spectatorMessage = "") {
   }
 
   stopTimer(room);
+  cancelPendingEngineMove(room);
   room.phase = "closed";
   room.updatedAt = new Date().toISOString();
   room.closeMessages = {
@@ -1522,9 +1625,90 @@ function restartTimer(room) {
     if (room.gameState.result) {
       room.phase = "finished";
       stopTimer(room);
+      cancelPendingEngineMove(room);
       finishCurrentGame(room);
     }
   }, 1000);
+}
+
+function cancelPendingEngineMove(room) {
+  if (!room) return;
+  room.engineMoveToken = (room.engineMoveToken || 0) + 1;
+  room.engineMovePending = false;
+  if (room.engineMoveTimerId) {
+    clearTimeout(room.engineMoveTimerId);
+    room.engineMoveTimerId = null;
+  }
+}
+
+async function playEngineMove(room, token, gameId) {
+  if (!room || !isEngineRoom(room) || room.phase !== "active" || room.currentGame?.id !== gameId || token !== room.engineMoveToken) {
+    return;
+  }
+  if (!isEngineRole(room, roleForColor(room.currentGame, room.gameState?.turn))) {
+    return;
+  }
+
+  try {
+    const options = normalizeEngineMatchOptions(room.engineOptions || {});
+    const payload = await runUkumogBridge({
+      command: "analyze",
+      position: {
+        rows: boardRowsFromState(room.gameState, room.config),
+        side_to_move: bridgeColor(room.gameState.turn),
+      },
+      engine: {
+        depth: options.depth,
+        time_ms: options.timeMs,
+        analyze_root: true,
+        include_move_maps: false,
+        temperature: 0,
+        ml_mode: "auto",
+        device: "cpu",
+        learned_weight: 0.10,
+        root_score_mode: "tt",
+      },
+    });
+    if (!room || room.phase !== "active" || room.currentGame?.id !== gameId || token !== room.engineMoveToken) {
+      return;
+    }
+    const bestMove = payload?.analysis?.best_move;
+    if (!bestMove || !Number.isInteger(bestMove.row) || !Number.isInteger(bestMove.col)) {
+      throw createHttpError(502, "Ukumog engine did not return a legal move.");
+    }
+    move(room, "guest", bestMove.row, bestMove.col);
+  } catch (error) {
+    if (token !== room.engineMoveToken) return;
+    room.engineError = error instanceof Error ? error.message : "Engine move failed.";
+    room.updatedAt = new Date().toISOString();
+  } finally {
+    if (token === room.engineMoveToken) {
+      room.engineMovePending = false;
+      room.engineMoveTimerId = null;
+    }
+  }
+}
+
+function scheduleEngineMove(room) {
+  if (!room || !isEngineRoom(room) || room.phase !== "active" || !room.currentGame || !room.gameState || room.gameState.result) {
+    return;
+  }
+  if (!isEngineRole(room, roleForColor(room.currentGame, room.gameState.turn))) {
+    return;
+  }
+  if (room.engineMovePending) {
+    return;
+  }
+
+  room.engineMovePending = true;
+  room.engineError = "";
+  const token = (room.engineMoveToken || 0) + 1;
+  room.engineMoveToken = token;
+  const gameId = room.currentGame.id;
+  room.engineMoveTimerId = setTimeout(() => {
+    room.engineMoveTimerId = null;
+    void playEngineMove(room, token, gameId);
+  }, 120);
 }
 
 function joinRoom(roomId, viewer) {
@@ -1602,14 +1786,62 @@ function move(room, role, row, col) {
   if (room.gameState.result) {
     room.phase = "finished";
     stopTimer(room);
+    cancelPendingEngineMove(room);
     finishCurrentGame(room);
   } else {
     restartTimer(room);
+    scheduleEngineMove(room);
   }
 }
 
 function requestRematch(room, role) {
   resolveRoomActionRequest(room, role, "rematch", "request");
+}
+
+function finishGameByAbandonment(room, leaverRole) {
+  if (!room?.currentGame || room.phase !== "active") {
+    return false;
+  }
+  const winnerRole = leaverRole === "host" ? "guest" : "host";
+  const winnerColor = colorForRole(room.currentGame, winnerRole);
+  if (!winnerColor) {
+    return false;
+  }
+
+  cancelPendingEngineMove(room);
+  room.gameState = {
+    ...room.gameState,
+    result: {
+      winner: winnerColor,
+      abandonedBy: leaverRole,
+      msg: `${leaverRole === "host" ? "Host" : "Guest"} abandoned the game`,
+      sub: `${pName(winnerColor)} wins by abandonment.`,
+      highlight: [],
+    },
+  };
+  room.phase = "finished";
+  room.updatedAt = new Date().toISOString();
+  stopTimer(room);
+  finishCurrentGame(room);
+  clearLiveRequests(room);
+  return true;
+}
+
+function markRoleLeft(room, role) {
+  if (!room || !role) return;
+  room.leftRoles = {
+    host: !!room.leftRoles?.host,
+    guest: !!room.leftRoles?.guest,
+    [role]: true,
+  };
+}
+
+function roleHasLeft(room, role) {
+  return !!(room?.leftRoles?.[role]);
+}
+
+function bothPlayersLeft(room) {
+  return !!(room?.leftRoles?.host && room?.leftRoles?.guest);
 }
 
 function leaveRoom(room, access, viewer) {
@@ -1624,12 +1856,33 @@ function leaveRoom(room, access, viewer) {
 
   const role = access.role;
 
-  if (role === "host") {
-    closeRoom(room, `You left room ${room.id}.`, `Room ${room.id} closed because the host left.`);
+  if (isEngineRoom(room)) {
+    if (room.phase === "active") {
+      finishGameByAbandonment(room, role);
+    }
+    closeRoom(room, `You left room ${room.id}.`, `Room ${room.id} closed.`);
     return;
   }
 
-  closeRoom(room, `Room ${room.id} closed because the guest left. Host again to create a new room.`, `You left room ${room.id}.`);
+  if (room.phase === "active") {
+    finishGameByAbandonment(room, role);
+    markRoleLeft(room, role);
+    return;
+  }
+
+  if (room.phase === "finished") {
+    markRoleLeft(room, role);
+    if (bothPlayersLeft(room)) {
+      closeRoom(room, `Room ${room.id} closed.`, `Room ${room.id} closed.`);
+    } else {
+      room.updatedAt = new Date().toISOString();
+    }
+    return;
+  }
+
+  if (room.phase === "waiting") {
+    closeRoom(room, `You left room ${room.id}.`, `Room ${room.id} closed.`);
+  }
 }
 
 function getLobbyState(viewer) {
@@ -1663,7 +1916,10 @@ function findBestRoomPresence(matchParticipant) {
       continue;
     }
 
-    if (matchParticipant(room.hostPlayer) || matchParticipant(room.guestPlayer)) {
+    if (
+      (!roleHasLeft(room, "host") && matchParticipant(room.hostPlayer))
+      || (!roleHasLeft(room, "guest") && matchParticipant(room.guestPlayer))
+    ) {
       candidates.push({
         room,
         status: room.phase === "waiting" ? "online" : "in_game",
@@ -2122,6 +2378,7 @@ async function handleApi(req, res, pathname, searchParams) {
     const room = createRoom(body.config, viewer, {
       invitedUserId: invitedUser?.id || null,
       publicVisible: body.publicVisible !== false,
+      engine: body.engine || null,
     });
     writeJson(res, 201, {
       viewer: exposeViewerFromSession(session),

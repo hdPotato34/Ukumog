@@ -1,108 +1,86 @@
 # Anti-Gomoku Online
 
-Last updated: `2026-04-13`
+Beta 1.0. Last updated: `2026-04-25`
 
-## Overview
+Anti-Gomoku Online is a browser-first Anti-Gomoku app with online rooms, engine games, local analysis, replay tools, record archives, lightweight accounts, and an optional Electron shell.
 
-Anti-Gomoku Online is a browser-first Anti-Gomoku project with local practice, online rooms, replay tools, record archives, and a lightweight account system.
+The production app is one Node.js server:
 
-Current shape of the project:
+- serves the React single-page app from `site/`
+- hosts the online room, account, lobby, history, chat, and engine APIs
+- calls the vendored Python Ukumog engine bridge from `vendor/ukumog-engine`
 
-- One Node.js HTTP/HTTPS server serves both static assets and online match APIs.
-- One React single-page frontend drives the hall, profile, room, and review flows.
-- One optional Electron shell runs the same app as a desktop build.
-- One optional Python engine bridge can analyze 11x11 review positions.
+Online play currently uses `HTTP + polling`, not WebSocket.
 
-Online play currently uses `HTTP + polling`. It does not use WebSocket yet.
+## What's New In Beta 1.0
+
+- Added play-vs-engine rooms with configurable engine depth and time cap.
+- Engine games behave like normal rooms, but are unrated, disallow draws, allow takebacks, allow rematches, and record match history.
+- Local practice now opens the analysis board directly.
+- Abandoning an active game now records a loss for the leaver and a win for the opponent.
+- Human rooms remain available to the opponent after one player leaves, then close after both players leave.
+- Custom clock settings now use working sliders for base time and increment.
+- Analysis view has more stable keyboard navigation and a more compact top-move panel.
+- The Docker image now packages the vendored engine and Python bridge path.
+
+See [CHANGELOG.md](CHANGELOG.md) for the running release journal.
 
 ## Current Features
 
-### Match and room flow
+### Match and Room Flow
 
-- Local practice mode
-- Public rooms and invite-only rooms
+- Online public rooms, hidden rooms, and direct invites
+- Play with engine from the same room flow
 - Spectator mode for started rooms
-- Join by room code
-- Invite link copy and auto-join
-- Room reconnect before the game finishes
-- Stable `roomId` plus per-game `game.id`
-- Continuous rematches inside the same room, with a fresh game record each time
-- Room settings for board size, host color, base time, and increment
-- Public visibility toggle for online rooms, including direct invites
-- Time presets: `3+2`, `5+3`, `10+5`, `15+10`, `Unlimited`, `Custom`
-- Custom base time from `30s` to `2h`
-- Custom increment from `0s` to `60s`
-- In-room chat
-- Spectator roster in the room view
-- Draw, takeback, and rematch negotiation
-- Endgame modal can be closed and reopened without leaving the room
+- Join by room code or invite link
+- Continuous rematches inside the same room
+- Board size, host color, clock preset, custom base time, and increment settings
+- In-room chat and spectator roster
+- Draw, takeback, and rematch negotiation for human games
+- Endgame checkout with rating summary and review entry
 
-### Accounts and hall
+### Accounts and Hall
 
 - Guest sessions
 - Register, login, and logout
 - User search
-- Public room list in the hall
-- Public room browser now lists both pending rooms and watchable active games
-- Pending invites list
-- Profile page for self and other users
-- Profile presence status with direct room entry for visible active games
-- Clickable opponent names in match history to jump to their profile
+- Public room browser
+- Pending invite list
+- Profiles, presence, match history, and rating curve
+- Clickable opponent names in match history
 
-### Records and review
+### Records, Review, and Engine
 
 - Custom PGN-like format: `AntiGomokuPGN/1`
 - Import, export, branch creation, and mainline promotion
-- Save a local practice position into the archive
-- Auto-archive finished online games locally
-- Review screen with branch navigation
-- Keyboard and button navigation for move stepping
-- Import modal and clipboard export
-- Local archive naming and save feedback
-- Match history list and rating curve
-- On-demand engine analysis inside the review screen for non-terminal `11x11` positions
+- Local archive in browser storage
+- Auto-archive for finished online games
+- Review keyboard navigation
+- Engine analysis for non-terminal `11x11` positions
+- Evaluation graph and top-candidate display
 
-### Board interaction
-
-- Last-move and result highlighting
-- Private right-click point marks
-- Private right-click line marks with grid snapping
-- Clear marks button for the current board view
-
-### Rating system
+### Rating System
 
 - Registered users start at `1000`
-- Only registered-vs-registered online games are rated
-- Rating temperature starts high and cools down over early games
-- Ratings are shown in the hall, room, history, and profile UI
-- Match history stores historical rating snapshots, not live values
+- Only registered-vs-registered human online games are rated
+- Engine games and guest-only games are unrated
+- Match history stores historical rating snapshots
 
 ## Code Map
 
-- `server.mjs`
-  Node.js server entry. Handles static files, auth, users, rooms, online games, history, and persistence.
-- `anti-gomoku.jsx`
-  Frontend app state and screen routing.
-- `hub-ui.jsx`
-  Hall, profile, history, and rating-curve UI.
-- `game-ui.jsx`
-  Board, local game, online game, review UI, chat, negotiation controls, and endgame modal.
-- `game-core.mjs`
-  Pure rules layer: board state, move legality, result checks, time controls, and clock ticking.
-- `game-record.mjs`
-  Record tree model, import/export, branching, and archive helpers.
-- `app-client.mjs`
-  Browser API client and session-token storage helpers.
-- `online-room.mjs`
-  Room code, invite link, clipboard, and room URL helpers.
-- `renderer.jsx`
-  Browser entry point.
-- `scripts/build.mjs`
-  `esbuild` pipeline that outputs web assets into `site/`.
-- `electron/main.cjs`
-  Electron desktop entry.
-- `data/app-state.json`
-  Lightweight persisted app state.
+- `server.mjs`: Node.js server, APIs, room lifecycle, persistence, engine bridge calls
+- `anti-gomoku.jsx`: frontend app state and screen routing
+- `hub-ui.jsx`: hall, profile, history, rating curve, and room creation UI
+- `game-ui.jsx`: board, online game, review UI, chat, room actions, endgame modal
+- `game-core.mjs`: pure game rules, board state, clocks, result checks
+- `game-record.mjs`: record tree model, import/export, archive helpers
+- `app-client.mjs`: browser API client and session-token helpers
+- `online-room.mjs`: room code, invite link, clipboard, URL helpers
+- `renderer.jsx`: browser entry point
+- `scripts/build.mjs`: esbuild pipeline for `site/`
+- `electron/main.cjs`: Electron desktop entry
+- `vendor/ukumog-engine`: vendored Python engine subtree
+- `docs/archive`: older scaffolding and workflow notes
 
 ## Running Locally
 
@@ -110,7 +88,7 @@ Online play currently uses `HTTP + polling`. It does not use WebSocket yet.
 
 - Node.js 20 or compatible
 - npm
-- Python 3.11+ if you want server-side engine analysis
+- Python 3.11+ for engine analysis and engine games
 
 ### Install
 
@@ -118,11 +96,11 @@ Online play currently uses `HTTP + polling`. It does not use WebSocket yet.
 npm install
 ```
 
-### Browser development
+### Browser Development
 
 ```powershell
 npm run build:app
-node server.mjs
+npm run server
 ```
 
 Default URL:
@@ -131,65 +109,257 @@ Default URL:
 http://127.0.0.1:8787
 ```
 
-### Common scripts
+### Engine Integration
 
-- `npm run build:app` builds the web app into `site/`
-- `npm run server` starts the Node server
-- `npm run desktop` builds and starts the Electron shell
-- `npm run dist` builds the Windows installer
-
-### Custom port
-
-```powershell
-$env:PORT=8790
-node server.mjs
-```
-
-### Engine integration
-
-The website can call the Ukumog engine through the Python JSON bridge.
-
-If the engine repo is checked out as a sibling directory:
-
-```text
-../Ukumog
-../ukumog-engine
-```
-
-the server will detect it automatically.
-
-You can also point the website server at a specific engine checkout:
-
-```powershell
-$env:UKUMOG_ENGINE_ROOT="D:\ukumog-engine"
-node server.mjs
-```
-
-If Python is not on your default `PATH`:
-
-```powershell
-$env:UKUMOG_PYTHON="E:\Anaconda3\python.exe"
-node server.mjs
-```
-
-Planned vendoring path for a subtree-based merge:
+The recommended engine layout is the vendored subtree:
 
 ```text
 vendor/ukumog-engine
 ```
 
-### HTTPS
+The server also detects a sibling checkout:
+
+```text
+../ukumog-engine
+```
+
+You can point to a specific engine checkout:
 
 ```powershell
-$env:HTTPS_KEY_PATH="D:\certs\server.key"
-$env:HTTPS_CERT_PATH="D:\certs\server.crt"
+$env:UKUMOG_ENGINE_ROOT="D:\ukumog-engine"
+$env:UKUMOG_PYTHON="D:\Python311\python.exe"
+npm run server
+```
+
+The engine bridge entry point is:
+
+```text
+python -m ukumog_engine.apps.json_bridge
+```
+
+### Common Scripts
+
+- `npm run build:app`: builds browser assets into `site/`
+- `npm run server`: starts the Node server
+- `npm run desktop`: builds and starts the Electron shell
+- `npm run dist`: builds the Windows installer
+
+## Deployment Guide
+
+This section describes deploying the whole package on a Linux server: site, API server, persisted app data, and vendored engine bridge.
+
+### Option A: Docker Compose
+
+Docker Compose is the most repeatable path for beta deployments.
+
+Requirements:
+
+- Docker
+- Docker Compose v2
+
+Build and start:
+
+```bash
+git clone https://github.com/hdPotato34/Ukumog.git
+cd Ukumog
+docker compose up -d --build
+```
+
+The app listens on:
+
+```text
+http://SERVER_IP:8787
+```
+
+The compose file mounts:
+
+```text
+./data:/app/data
+```
+
+That keeps accounts, sessions, and registered-user match history across container rebuilds.
+
+Useful operations:
+
+```bash
+docker compose logs -f
+docker compose restart
+docker compose pull
+docker compose down
+```
+
+To upgrade:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+### Option B: Bare-Metal Linux Service
+
+Requirements:
+
+- Node.js 20+
+- npm
+- Python 3.11+
+- git
+- a reverse proxy such as nginx or Caddy for HTTPS
+
+Install system packages on Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv build-essential
+```
+
+Install Node.js 20 using your preferred source. For example, with NodeSource:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+Deploy the app:
+
+```bash
+sudo mkdir -p /opt/ukumog
+sudo chown "$USER":"$USER" /opt/ukumog
+git clone https://github.com/hdPotato34/Ukumog.git /opt/ukumog/app
+cd /opt/ukumog/app
+npm ci --ignore-scripts --engine-strict=false
+npm run build:app
+mkdir -p data
+```
+
+Smoke test:
+
+```bash
+PORT=8787 \
+UKUMOG_ENGINE_ROOT=/opt/ukumog/app/vendor/ukumog-engine \
+UKUMOG_PYTHON=python3 \
 node server.mjs
 ```
 
-If the certificate has a passphrase:
+Health check:
 
-```powershell
-$env:HTTPS_PASSPHRASE="your-passphrase"
+```bash
+curl http://127.0.0.1:8787/health
+```
+
+Engine check:
+
+```bash
+curl http://127.0.0.1:8787/api/engine/info
+```
+
+### systemd Unit
+
+Create `/etc/systemd/system/ukumog.service`:
+
+```ini
+[Unit]
+Description=Ukumog Anti-Gomoku Online
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ukumog/app
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=UKUMOG_ENGINE_ROOT=/opt/ukumog/app/vendor/ukumog-engine
+Environment=UKUMOG_PYTHON=python3
+ExecStart=/usr/bin/node server.mjs
+Restart=always
+RestartSec=5
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Set permissions and start:
+
+```bash
+sudo chown -R www-data:www-data /opt/ukumog/app/data
+sudo systemctl daemon-reload
+sudo systemctl enable --now ukumog
+sudo systemctl status ukumog
+```
+
+Watch logs:
+
+```bash
+journalctl -u ukumog -f
+```
+
+### Reverse Proxy
+
+Example nginx site:
+
+```nginx
+server {
+    listen 80;
+    server_name example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Add HTTPS with Certbot, Caddy, or your normal certificate workflow.
+
+### Deployment Environment Variables
+
+- `PORT`: HTTP port, default `8787`
+- `HOST`: bind host, default `0.0.0.0`
+- `UKUMOG_ENGINE_ROOT`: path to the engine checkout or vendored subtree
+- `UKUMOG_PYTHON`: Python executable, default auto-detects `python3`/`python`
+- `UKUMOG_ENGINE_PERSISTENT`: set to `0` to disable the persistent bridge process
+- `ENGINE_REQUEST_TIMEOUT_MS`: engine API timeout, default `15000`
+- `HTTPS_KEY_PATH`, `HTTPS_CERT_PATH`, `HTTPS_PASSPHRASE`: optional direct HTTPS support
+
+### Persistent Data
+
+Server data is stored at:
+
+```text
+data/app-state.json
+```
+
+Back it up before deploys:
+
+```bash
+cp data/app-state.json data/app-state.$(date +%Y%m%d-%H%M%S).json
+```
+
+Live rooms are in memory. A server restart clears unfinished rooms but keeps registered users, sessions, and match history.
+
+### Release Checklist
+
+Run before pushing a release:
+
+```bash
+npm ci --ignore-scripts --engine-strict=false
+npm run build:app
+node server.mjs
+curl http://127.0.0.1:8787/health
+curl http://127.0.0.1:8787/api/engine/info
+```
+
+For Docker:
+
+```bash
+docker compose build
+docker compose up -d
+docker compose ps
+docker compose logs --tail=100
 ```
 
 ## API Summary
@@ -215,6 +385,7 @@ Main endpoints:
 - `POST /api/rooms/:roomId/leave`
 - `GET /api/engine/info`
 - `POST /api/engine/analyze`
+- `POST /api/engine/cache`
 - `GET /health`
 
 Session tokens are accepted through request headers:
@@ -224,73 +395,19 @@ Session tokens are accepted through request headers:
 
 Tokens should not be passed through URL query parameters.
 
-## Data and Persistence
-
-### Persisted in `data/app-state.json`
-
-- Registered users
-- Sessions
-- Password hashes and salts
-- Recent online match history summaries for registered users
-
-### Stored only in server memory
-
-- Live rooms
-- Active game state
-- Active spectators and room visibility flags
-- Room chat messages
-- Negotiation request state
-- Room timers
-
-### Stored only in browser local storage
-
-- Local record archive
-- Local copies of finished online game records
-- Local review branches and edits
-
-## Important Model Notes
-
-### Room and game are separate layers
-
-- `roomId`
-  Stable room identity used for invites, reconnect, and reopening the same room.
-- `game.id`
-  Identity for one concrete game inside the room. A rematch creates a new `game.id`.
-
-This split is what makes later features easier:
-
-- record storage
-- match history
-- review deep links
-- per-game rating snapshots
-
-### Rating rules
-
-- Initial rating: `1000`
-- Only games between two registered users are rated
-- Temperature is high early and gradually stabilizes
-- History stores the rating snapshot from that time
-
 ## Known Limits
 
-- Online sync still depends on polling instead of push events
-- A server restart does not restore live rooms or unfinished games
-- Rooms are still kept in single-process memory and are not ready for multi-instance scaling
-- Local record archives depend on browser `localStorage` and do not sync across devices
-- Engine analysis currently supports only `11x11` non-terminal review positions
-- There is no full automated test suite yet
-- There is no admin tooling, moderation, rate limiting, or audit trail for production use
-
-## Cleanup in This Pass
-
-- Fixed corrupted rating-delta text in the UI
-- Removed duplicate dead formatting helpers
-- Hardened session-token handling so tokens are no longer accepted from URL query parameters
-- Rewrote `README.md` into a current, readable developer document
+- Online sync still depends on polling instead of push events.
+- A server restart does not restore live rooms or unfinished games.
+- Rooms are kept in single-process memory and are not ready for multi-instance scaling.
+- Local record archives depend on browser `localStorage` and do not sync across devices.
+- Engine support currently targets `11x11` positions.
+- There is no full automated test suite yet.
+- Production deployments still need normal hardening around rate limits, logs, backups, and moderation.
 
 ## Suggested Next Steps
 
-- Persist rooms and games so server restarts can recover state
-- Add automated tests for the rules layer and core API flows
-- Continue hardening rate limits, logging, and auditability for online endpoints
-- Evaluate `SSE` or another push model if polling becomes the next bottleneck
+- Persist rooms and games so server restarts can recover state.
+- Add automated tests for rules and core API flows.
+- Add rate limiting and structured server logs.
+- Consider SSE or another push model if polling becomes the next bottleneck.

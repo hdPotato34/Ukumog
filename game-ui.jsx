@@ -518,6 +518,7 @@ function RoomActionPanel({ session, onRoomAction }) {
   }
 
   const role = session.role;
+  const isEngineRoom = session.roomSummary?.kind === "engine";
   const drawState = requestStateForRole(session.requests?.draw, role);
   const takebackState = requestStateForRole(session.requests?.takeback, role);
   const rematchState = requestStateForRole(session.requests?.rematch, role);
@@ -543,13 +544,15 @@ function RoomActionPanel({ session, onRoomAction }) {
     <div style={{ padding: "14px 15px", borderRadius: 14, border: "1px solid #211a11", background: "#0f151c", display: "grid", gap: 12 }}>
       <div style={{ fontSize: 20, color: GOLD }}>Room Actions</div>
       <div style={{ fontFamily: "'DM Sans'", fontSize: 11, color: "#d4c08f", lineHeight: 1.7, display: "grid", gap: 10 }}>
-        <div>
+        {!isEngineRoom ? <div>
           <div style={{ color: "#8f7546", marginBottom: 6 }}>Draw</div>
           {renderActionRow("draw", drawState, canDrawOrTakeback)}
-        </div>
+        </div> : null}
         <div>
           <div style={{ color: "#8f7546", marginBottom: 6 }}>Takeback</div>
-          {renderActionRow("takeback", takebackState, canDrawOrTakeback)}
+          {isEngineRoom ? (
+            <button className="tb-btn" onClick={() => onRoomAction("takeback", "request")} disabled={!canDrawOrTakeback} style={actionBtn("ghost", !canDrawOrTakeback)}>Takeback</button>
+          ) : renderActionRow("takeback", takebackState, canDrawOrTakeback)}
         </div>
         <div>
           <div style={{ color: "#8f7546", marginBottom: 6 }}>Rematch</div>
@@ -855,8 +858,8 @@ function ReviewMoveList({ record, currentNodeId, onJump }) {
           return (
             <div key={`row-${rowIndex}`} style={{ display: "grid", gridTemplateColumns: "56px minmax(0, 1fr) minmax(0, 1fr)", borderBottom: rowIndex === Math.ceil((path.length - 1) / 2) - 1 ? "none" : "1px solid #19130c" }}>
               <div style={{ padding: "10px 8px", fontFamily: "'DM Sans'", fontSize: 11, color: "#9b8253" }}>{rowIndex + 1}</div>
-              <button className="ghost-btn" onClick={() => blackNodeId && onJump(blackNodeId)} disabled={!blackNodeId} style={{ ...ghostButton(!blackNodeId), border: "none", borderLeft: "1px solid #241b11", borderRadius: 0, textAlign: "left", padding: "10px 10px", background: currentNodeId === blackNodeId ? "rgba(232,201,106,0.12)" : "transparent", color: blackNode ? "#e8dcc8" : "#57472b" }}>{blackNode ? blackNode.move.notation : ""}</button>
-              <button className="ghost-btn" onClick={() => whiteNodeId && onJump(whiteNodeId)} disabled={!whiteNodeId} style={{ ...ghostButton(!whiteNodeId), border: "none", borderLeft: "1px solid #241b11", borderRadius: 0, textAlign: "left", padding: "10px 10px", background: currentNodeId === whiteNodeId ? "rgba(232,201,106,0.12)" : "transparent", color: whiteNode ? "#e8dcc8" : "#57472b" }}>{whiteNode ? whiteNode.move.notation : ""}</button>
+              <button className="ghost-btn" tabIndex={-1} onMouseDown={(event) => event.preventDefault()} onClick={() => blackNodeId && onJump(blackNodeId)} disabled={!blackNodeId} style={{ ...ghostButton(!blackNodeId), border: "none", borderLeft: "1px solid #241b11", borderRadius: 0, textAlign: "left", padding: "10px 10px", background: currentNodeId === blackNodeId ? "rgba(232,201,106,0.12)" : "transparent", color: blackNode ? "#e8dcc8" : "#57472b" }}>{blackNode ? blackNode.move.notation : ""}</button>
+              <button className="ghost-btn" tabIndex={-1} onMouseDown={(event) => event.preventDefault()} onClick={() => whiteNodeId && onJump(whiteNodeId)} disabled={!whiteNodeId} style={{ ...ghostButton(!whiteNodeId), border: "none", borderLeft: "1px solid #241b11", borderRadius: 0, textAlign: "left", padding: "10px 10px", background: currentNodeId === whiteNodeId ? "rgba(232,201,106,0.12)" : "transparent", color: whiteNode ? "#e8dcc8" : "#57472b" }}>{whiteNode ? whiteNode.move.notation : ""}</button>
             </div>
           );
         })}
@@ -993,8 +996,10 @@ function ReviewBranchPanel({ record, currentNodeId, onJump }) {
               <button
                 key={nodeId}
                 className="ghost-btn"
+                tabIndex={-1}
                 onClick={() => onJump(nodeId)}
                 onPointerDown={(event) => {
+                  event.preventDefault();
                   event.stopPropagation();
                 }}
                 title={nodeId === record.rootId ? "Start" : `${node.move.player}@${node.move.notation}`}
@@ -1116,7 +1121,7 @@ export function OnlineGame({ session, shareLink, inviteCopied, onCopyInvite, onM
         backLabel="<- Hall"
         rightLabel={session.roomId ? `${roleLabel(session.role, session.mode, session.game)} | ${session.roomId}${session.gameIndex ? ` | G${session.gameIndex}` : ""}` : roleLabel(session.role, session.mode, session.game)}
         status={<Status state={state} message={message} sub={sub} />}
-        banner={<>{session.mode === "host" && session.roomId ? <SharePanel link={shareLink} copied={inviteCopied} onCopy={onCopyInvite} /> : null}<PlayerRosterPanel roomSummary={session.roomSummary} game={session.game} /></>}
+        banner={<>{session.mode === "host" && session.roomId && session.roomSummary?.kind !== "engine" ? <SharePanel link={shareLink} copied={inviteCopied} onCopy={onCopyInvite} /> : null}<PlayerRosterPanel roomSummary={session.roomSummary} game={session.game} /></>}
         annotationScopeKey={session.gameId || session.game?.id || session.roomId || "room"}
         annotationResetToken={annotationResetToken}
         controls={
@@ -1503,19 +1508,17 @@ function ReviewEngineSummary({
             </div>
           </div>
 
-          {topMoves.length ? (
-            <div style={{ padding: "10px 11px", borderRadius: 7, border: "1px solid #241c11", background: "#0e141b" }}>
-              <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase", marginBottom: 6 }}>Top Candidates</div>
-              <div style={{ display: "grid", gap: 8 }}>
-                {topMoves.slice(0, 5).map((entry, index) => (
-                  <div key={`${entry.move?.index || index}:${entry.score}`} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontFamily: "'DM Sans'", fontSize: 12, color: "#d2bd92" }}>
-                    <span>{index + 1}. {formatEngineMove(entry.move)}</span>
-                    <span>{formatBlackObjectiveScore(objectiveScoreForSideToMove(entry.score, sideToMove))}</span>
-                  </div>
-                ))}
-              </div>
+          <div style={{ padding: "9px 10px", minHeight: 78, borderRadius: 7, border: "1px solid #241c11", background: "#0e141b" }}>
+            <div style={{ fontFamily: "'DM Sans'", fontSize: 10, color: "#8c7344", letterSpacing: 1.8, textTransform: "uppercase", marginBottom: 7 }}>Top Candidates</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6 }}>
+              {topMoves.length ? topMoves.slice(0, 4).map((entry, index) => (
+                <div key={`${entry.move?.index || index}:${entry.score}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", minWidth: 0, padding: "5px 7px", borderRadius: 6, border: "1px solid #21180f", background: "rgba(17,24,32,0.72)", fontFamily: "'DM Sans'", fontSize: 11, color: "#d2bd92" }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{index + 1}. {formatEngineMove(entry.move)}</span>
+                  <span style={{ color: "#bfa66e", whiteSpace: "nowrap" }}>{formatBlackObjectiveScore(objectiveScoreForSideToMove(entry.score, sideToMove))}</span>
+                </div>
+              )) : <div style={{ gridColumn: "1 / -1", fontFamily: "'DM Sans'", fontSize: 11, color: "#8c7344" }}>No root scores yet.</div>}
             </div>
-          ) : null}
+          </div>
         </>
       ) : !disabledReason && !loading && !error ? (
         <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#b79b66", lineHeight: 1.8 }}>
@@ -1693,8 +1696,15 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
       if (event.target && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) {
         return;
       }
+      const blurReviewControl = () => {
+        const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+        if (activeElement?.blur && !["BODY", "HTML"].includes(activeElement.tagName)) {
+          activeElement.blur();
+        }
+      };
       if (event.key === "ArrowLeft") {
         event.preventDefault();
+        blurReviewControl();
         const path = getNodePath(record, activeNodeId);
         if (path.length > 1) {
           setActiveNodeId(path[path.length - 2]);
@@ -1702,6 +1712,7 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
       }
       if (event.key === "ArrowRight") {
         event.preventDefault();
+        blurReviewControl();
         const children = getChildNodes(record, activeNodeId);
         if (children.length) {
           setActiveNodeId(children[0].id);
@@ -1709,16 +1720,19 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
       }
       if (event.key === "Home") {
         event.preventDefault();
+        blurReviewControl();
         setActiveNodeId(record.rootId);
       }
       if (event.key === "End") {
         event.preventDefault();
+        blurReviewControl();
         setActiveNodeId(jumpToMainlineEnd(record, activeNodeId));
       }
       if (event.key === "ArrowUp" || event.key === "PageUp") {
         const previousBranch = cycleBranchNode(record, activeNodeId, -1);
         if (previousBranch) {
           event.preventDefault();
+          blurReviewControl();
           setActiveNodeId(previousBranch);
         }
       }
@@ -1726,6 +1740,7 @@ export function ReviewGame({ record, currentNodeId, onBack, onChangeRecord, onSa
         const nextBranch = cycleBranchNode(record, activeNodeId, 1);
         if (nextBranch) {
           event.preventDefault();
+          blurReviewControl();
           setActiveNodeId(nextBranch);
         }
       }

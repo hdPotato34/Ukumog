@@ -8,8 +8,12 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8787
+      UKUMOG_ENGINE_ROOT: /app/vendor/ukumog-engine
+      UKUMOG_PYTHON: python3
     ports:
       - "8787:8787"
+    volumes:
+      - ./data:/app/data
     healthcheck:
       test:
         - CMD

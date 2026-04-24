@@ -268,6 +268,12 @@ function formatBaseTimeOption(seconds) {
   return `${seconds}s`;
 }
 
+function formatEngineTime(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return "No cap";
+  return value >= 1000 ? `${(value / 1000).toFixed(value % 1000 === 0 ? 0 : 1)}s` : `${value}ms`;
+}
+
 function getClockPresetId(config) {
   const cleanConfig = sanitizeConfig(config);
   const preset = CLOCK_PRESET_OPTIONS.find((option) => (
@@ -522,9 +528,23 @@ function CurrentRoomStrip({ room, onOpenRoom }) {
   );
 }
 
+function RangeSetting({ label, valueLabel, min, max, step = 1, value, onChange }) {
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <div style={labelStyle()}>{label}</div>
+        <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d4c08f" }}>{valueLabel}</div>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} style={{ width: "100%" }} />
+    </div>
+  );
+}
+
 function MatchConfigFields({ config, onConfigChange }) {
   const cleanConfig = sanitizeConfig(config);
   const presetId = getClockPresetId(cleanConfig);
+  const [selectedClockId, setSelectedClockId] = useState(presetId);
+  const displayedClockId = selectedClockId === "custom" ? "custom" : presetId;
   const baseIndex = Math.max(0, CUSTOM_BASE_TIME_OPTIONS.indexOf(cleanConfig.baseSeconds ?? 180));
 
   return (
@@ -548,53 +568,29 @@ function MatchConfigFields({ config, onConfigChange }) {
             <button
               key={option.id}
               className="ghost-btn"
-              onClick={() => onConfigChange(option.custom ? {
-                ...cleanConfig,
-                baseSeconds: cleanConfig.baseSeconds ?? 180,
-                incrementSeconds: cleanConfig.baseSeconds === null ? 2 : cleanConfig.incrementSeconds,
-              } : {
-                ...cleanConfig,
-                baseSeconds: option.baseSeconds,
-                incrementSeconds: option.incrementSeconds,
-              })}
-              style={pill(presetId === option.id)}
+              onClick={() => {
+                setSelectedClockId(option.id);
+                onConfigChange(option.custom ? {
+                  ...cleanConfig,
+                  baseSeconds: cleanConfig.baseSeconds ?? 180,
+                  incrementSeconds: cleanConfig.baseSeconds === null ? 2 : cleanConfig.incrementSeconds,
+                } : {
+                  ...cleanConfig,
+                  baseSeconds: option.baseSeconds,
+                  incrementSeconds: option.incrementSeconds,
+                });
+              }}
+              style={pill(displayedClockId === option.id)}
             >
               {option.label}
             </button>
           ))}
         </div>
       </div>
-      {presetId === "custom" ? (
+      {displayedClockId === "custom" ? (
         <div style={{ display: "grid", gap: 12, padding: "14px 15px", borderRadius: 14, border: "1px solid #211a11", background: "#0f151c" }}>
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <div style={labelStyle()}>Base Time</div>
-              <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d4c08f" }}>{cleanConfig.baseSeconds === null ? "Unlimited" : formatBaseTimeOption(cleanConfig.baseSeconds)}</div>
-            </div>
-            <input type="range" min={0} max={CUSTOM_BASE_TIME_OPTIONS.length - 1} step={1} value={baseIndex} onChange={(event) => onConfigChange({ ...cleanConfig, baseSeconds: CUSTOM_BASE_TIME_OPTIONS[Number(event.target.value)] })} style={{ width: "100%" }} />
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontFamily: "'DM Sans'", fontSize: 10, color: "#7c6841", marginTop: 6 }}>
-              <span>30s</span>
-              <span>1m</span>
-              <span>5m</span>
-              <span>10m</span>
-              <span>30m</span>
-              <span>2h</span>
-            </div>
-          </div>
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <div style={labelStyle()}>Increment</div>
-              <div style={{ fontFamily: "'DM Sans'", fontSize: 12, color: "#d4c08f" }}>+{cleanConfig.incrementSeconds}s</div>
-            </div>
-            <input type="range" min={0} max={60} step={1} value={cleanConfig.incrementSeconds} onChange={(event) => onConfigChange({ ...cleanConfig, incrementSeconds: Number(event.target.value) })} style={{ width: "100%" }} />
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontFamily: "'DM Sans'", fontSize: 10, color: "#7c6841", marginTop: 6 }}>
-              <span>0s</span>
-              <span>15s</span>
-              <span>30s</span>
-              <span>45s</span>
-              <span>60s</span>
-            </div>
-          </div>
+          <RangeSetting label="Base Time" valueLabel={cleanConfig.baseSeconds === null ? "Unlimited" : formatBaseTimeOption(cleanConfig.baseSeconds)} min={0} max={CUSTOM_BASE_TIME_OPTIONS.length - 1} value={baseIndex} onChange={(index) => onConfigChange({ ...cleanConfig, baseSeconds: CUSTOM_BASE_TIME_OPTIONS[index] })} />
+          <RangeSetting label="Increment" valueLabel={`+${cleanConfig.incrementSeconds}s`} min={0} max={60} value={cleanConfig.incrementSeconds} onChange={(incrementSeconds) => onConfigChange({ ...cleanConfig, incrementSeconds })} />
         </div>
       ) : null}
     </>
@@ -614,14 +610,60 @@ function VisibilityField({ value, onChange, helpText }) {
   );
 }
 
-function CreateRoomModal({ open, onClose, createConfig, createPublicVisible, onConfigChange, onCreatePublicVisibleChange, onCreatePublic, onStartLocal }) {
+function EngineConfigFields({ engineConfig, onEngineConfigChange }) {
+  const config = {
+    depth: Number(engineConfig?.depth || 5),
+    timeMs: Number(engineConfig?.timeMs ?? 1500),
+  };
+  return (
+    <div style={{ display: "grid", gap: 12, padding: "14px 15px", borderRadius: 14, border: "1px solid #211a11", background: "#0f151c" }}>
+      <RangeSetting label="Engine Depth" valueLabel={`Depth ${config.depth}`} min={1} max={12} value={config.depth} onChange={(depth) => onEngineConfigChange({ ...config, depth })} />
+      <RangeSetting label="Time Cap" valueLabel={formatEngineTime(config.timeMs)} min={0} max={20000} step={250} value={config.timeMs} onChange={(timeMs) => onEngineConfigChange({ ...config, timeMs })} />
+    </div>
+  );
+}
+
+function GameModeField({ value, onChange }) {
+  const options = [
+    { value: "online", label: "Online Room" },
+    { value: "local", label: "Local Practice" },
+    { value: "engine", label: "Play With Engine" },
+  ];
+  return (
+    <div style={{ display: "grid", gap: 10, padding: "14px 15px", borderRadius: 14, border: "1px solid #2b2114", background: "linear-gradient(180deg, rgba(25,30,36,0.98), rgba(13,19,25,0.98))" }}>
+      <div style={labelStyle()}>Game Mode</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 9 }}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            className="ghost-btn"
+            onClick={() => onChange(option.value)}
+            style={{
+              ...ghostButton(false),
+              borderColor: value === option.value ? GOLD : "#302717",
+              background: value === option.value ? "rgba(232,201,106,0.12)" : "rgba(12,17,23,0.72)",
+              color: value === option.value ? GOLD : "#b99b64",
+              padding: "13px 12px",
+              borderRadius: 8,
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CreateRoomModal({ open, onClose, createConfig, createPublicVisible, createMode, engineConfig, onConfigChange, onCreatePublicVisibleChange, onCreateModeChange, onEngineConfigChange, onStartCreateRoom }) {
   return (
     <ModalShell open={open} onClose={onClose} title="Create Room" sub="Configure the board once, then start an online room or a local practice board.">
+      <GameModeField value={createMode} onChange={onCreateModeChange} />
       <MatchConfigFields config={createConfig} onConfigChange={(nextConfig) => onConfigChange(sanitizeConfig(nextConfig))} />
-      <VisibilityField value={createPublicVisible} onChange={onCreatePublicVisibleChange} helpText="Visible rooms show up in the public room browser while waiting, and started games can be watched." />
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button className="hub-btn" onClick={onCreatePublic} style={solidButton(false)}>Create Online Room</button>
-        <button className="ghost-btn" onClick={onStartLocal} style={ghostButton(false)}>Local Practice</button>
+      {createMode === "online" ? <VisibilityField value={createPublicVisible} onChange={onCreatePublicVisibleChange} helpText="Visible rooms show up in the public room browser while waiting, and started games can be watched." /> : null}
+      {createMode === "engine" ? <EngineConfigFields engineConfig={engineConfig} onEngineConfigChange={onEngineConfigChange} /> : null}
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button className="hub-btn" onClick={onStartCreateRoom} style={solidButton(false)}>Start</button>
       </div>
     </ModalShell>
   );
@@ -1050,7 +1092,19 @@ export function HallPage(props) {
         </Section>
       </div>
 
-      <CreateRoomModal open={activePanel === "create"} onClose={() => setActivePanel(null)} createConfig={sanitizeConfig(createConfig)} createPublicVisible={createPublicVisible} onConfigChange={onConfigChange} onCreatePublicVisibleChange={onCreatePublicVisibleChange} onCreatePublic={onCreatePublic} onStartLocal={onStartLocal} />
+      <CreateRoomModal
+        open={activePanel === "create"}
+        onClose={() => setActivePanel(null)}
+        createConfig={sanitizeConfig(createConfig)}
+        createPublicVisible={createPublicVisible}
+        createMode={props.createMode}
+        engineConfig={props.engineConfig}
+        onConfigChange={onConfigChange}
+        onCreatePublicVisibleChange={onCreatePublicVisibleChange}
+        onCreateModeChange={props.onCreateModeChange}
+        onEngineConfigChange={props.onEngineConfigChange}
+        onStartCreateRoom={props.onStartCreateRoom}
+      />
       <JoinCodeModal open={activePanel === "code"} onClose={() => setActivePanel(null)} roomCode={roomCode} onRoomCodeChange={onRoomCodeChange} onJoinByCode={onJoinByCode} />
       <RoomBrowserModal open={activePanel === "public"} onClose={() => setActivePanel(null)} title="Public Rooms" sub="Visible waiting rooms and active games both appear here. Join an open seat, or spectate a game already in progress." rooms={rooms.publicRooms} emptyText="The public hall is quiet right now." actionLabel={(room) => room.canJoin ? "Join" : room.canSpectate ? "Spectate" : null} onAction={onOpenRoom} />
       <RoomBrowserModal open={activePanel === "invites"} onClose={() => setActivePanel(null)} title="Pending Invites" sub="These rooms were created specifically for this account or guest session." rooms={rooms.invites} emptyText="No direct challenges are waiting for you right now." actionLabel={() => "Join"} onAction={onOpenRoom} />

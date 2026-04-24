@@ -33,6 +33,7 @@ import {
 } from "./app-client.mjs";
 import {
   buildRecordFromMoves,
+  createEmptyRecord,
   findArchivedRecordByGameId,
   findDeepestMainlineNode,
   loadArchivedRecords,
@@ -88,6 +89,8 @@ export default function App() {
   const [roomCode, setRoomCode] = useState(() => initialInvite.roomId || "");
   const [createConfig, setCreateConfig] = useState(() => sanitizeConfig(DEFAULT_MATCH_CONFIG));
   const [createPublicVisible, setCreatePublicVisible] = useState(true);
+  const [createMode, setCreateMode] = useState("online");
+  const [engineConfig, setEngineConfig] = useState({ depth: 5, timeMs: 1500 });
   const [challengeConfig, setChallengeConfig] = useState(() => sanitizeConfig(DEFAULT_MATCH_CONFIG));
   const [challengePublicVisible, setChallengePublicVisible] = useState(true);
   const [onlineSession, setOnlineSession] = useState(null);
@@ -352,7 +355,12 @@ export default function App() {
     resetInviteCopied();
 
     if (sendLeave && current?.roomId && sessionTokenRef.current) {
-      leaveRoomRequest(sessionTokenRef.current, current.roomId, true).catch(() => {});
+      try {
+        const payload = await leaveRoomRequest(sessionTokenRef.current, current.roomId, true);
+        if (payload.viewer) setViewer(payload.viewer);
+      } catch {
+        // Navigating away from the room should still complete locally even if the leave ping is lost.
+      }
     }
 
     clearInviteFromBrowserUrl();
@@ -360,6 +368,7 @@ export default function App() {
     setScreen(navigateTo);
     setAppNotice(nextNotice);
     await refreshLobby();
+    await refreshMatchHistoryData();
     scheduleLobbyPolling();
   };
 
@@ -502,14 +511,10 @@ export default function App() {
     }
 
     const moves = Array.isArray(game.moves) ? game.moves : [];
-    if (!moves.length) {
-      return;
-    }
-
     const record = buildRecordFromMoves(onlineSession.config, moves, {
       title: `Room ${onlineSession.roomId}${onlineSession.gameIndex ? ` - Game ${onlineSession.gameIndex}` : ""}`,
       sourceKind: "online",
-      sourceLabel: "Online Match",
+      sourceLabel: onlineSession.roomSummary?.kind === "engine" ? "Engine Match" : "Online Match",
       roomId: onlineSession.roomId,
       gameId: game.id,
       gameIndex: onlineSession.gameIndex,
@@ -711,6 +716,31 @@ export default function App() {
     }
   };
 
+  const handleCreateEngineRoom = async () => {
+    try {
+      const payload = await createRoomRequest(sessionTokenRef.current, {
+        config: createConfig,
+        publicVisible: createPublicVisible,
+        engine: engineConfig,
+      });
+      openRoomPayload(payload, "host");
+    } catch (error) {
+      setAppNotice(error instanceof Error ? error.message : "Could not start the engine room.");
+    }
+  };
+
+  const handleStartCreateRoom = () => {
+    if (createMode === "local") {
+      handleStartLocal();
+      return;
+    }
+    if (createMode === "engine") {
+      void handleCreateEngineRoom();
+      return;
+    }
+    void handleCreatePublicRoom();
+  };
+
   const handleChallengeUser = async () => {
     if (!profileUser?.loginId || (viewer?.loginId && profileUser.loginId === viewer.loginId)) {
       setAppNotice("Open another player profile to send a direct challenge.");
@@ -751,9 +781,13 @@ export default function App() {
 
   const handleStartLocal = () => {
     closeMenus();
-    setLocalConfig(sanitizeConfig(createConfig));
-    setLocalGameKey((key) => key + 1);
-    setScreen("local");
+    const config = sanitizeConfig(createConfig);
+    const record = createEmptyRecord(config, {
+      title: `Local Practice ${config.boardSize}x${config.boardSize}`,
+      sourceKind: "local",
+      sourceLabel: "Analysis Board",
+    });
+    openReviewRecord(record, { backScreen: "hall" });
     setAppNotice("");
   };
 
@@ -974,8 +1008,13 @@ export default function App() {
       onJoinByCode={() => { void handleJoinByCode(); }}
       createConfig={createConfig}
       createPublicVisible={createPublicVisible}
+      createMode={createMode}
+      engineConfig={engineConfig}
       onConfigChange={setCreateConfig}
       onCreatePublicVisibleChange={setCreatePublicVisible}
+      onCreateModeChange={setCreateMode}
+      onEngineConfigChange={setEngineConfig}
+      onStartCreateRoom={handleStartCreateRoom}
       onCreatePublic={() => { void handleCreatePublicRoom(); }}
       onOpenRoom={(room) => { void handleOpenRoom(room); }}
       onStartLocal={handleStartLocal}
